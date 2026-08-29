@@ -22,6 +22,7 @@ from mjlab.sensor import CameraSensorCfg, ContactSensorCfg
 from mjlab.tasks.manipulation import mdp as manipulation_mdp
 from mjlab.tasks.manipulation.lift_cube_env_cfg import make_lift_cube_env_cfg
 from mjlab.tasks.manipulation.mdp import MultiCubeLiftingCommandCfg
+from mjlab.tasks.manipulation.push_t_env_cfg import make_push_t_env_cfg
 
 
 def get_cube_spec(
@@ -291,6 +292,141 @@ def yam_multi_cube_seg_env_cfg(
     cfg.commands["lift_height"].resampling_time_range = (
       4.0,
       4.0,
+    )
+
+  return cfg
+
+
+def yam_push_t_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """State-based Push-T on the YAM arm."""
+  cfg = make_push_t_env_cfg()
+
+  joint_pos_action = cfg.actions["joint_pos"]
+  assert isinstance(joint_pos_action, JointPositionActionCfg)
+  joint_pos_action.scale = YAM_ACTION_SCALE
+
+  cfg.observations["actor"].terms["ee_to_t"].params["asset_cfg"].site_names = (
+    "grasp_site",
+  )
+  cfg.rewards["push"].params["asset_cfg"].site_names = ("grasp_site",)
+
+  fingertip_geoms = r"[lr]f_down(6|7|8|9|10|11)_collision"
+  cfg.events["fingertip_friction_slide"].params[
+    "asset_cfg"
+  ].geom_names = fingertip_geoms
+
+  assert cfg.scene.sensors is not None
+  for sensor in cfg.scene.sensors:
+    if sensor.name == "ee_ground_collision":
+      assert isinstance(sensor, ContactSensorCfg)
+      sensor.primary.pattern = "link_6"
+
+  cfg.viewer.body_name = "arm"
+
+  if play:
+    cfg.episode_length_s = int(1e9)
+    cfg.observations["actor"].enable_corruption = False
+    cfg.curriculum = {}
+
+  return cfg
+
+
+def yam_push_t_vision_env_cfg(
+  cam_type: Literal["rgb", "depth"] = "depth",
+  visual_goal: bool = False,
+  play: bool = False,
+) -> ManagerBasedRlEnvCfg:
+  """Push-T from the wrist camera.
+
+  The actor loses the block's pose and must read it off the image. It keeps the
+  goal pose as state: the footprint is 1 mm tall and lives in geom group 2,
+  which the camera does not render, so it is not visible in depth at all. The
+  critic keeps full state (asymmetric actor-critic).
+  """
+  cfg = yam_push_t_env_cfg(play=play)
+
+  cam_cfg = CameraSensorCfg(
+    name="camera_d405",
+    camera_name="robot/camera_d405",
+    height=32,
+    width=32,
+    data_types=(cam_type,),
+    enabled_geom_groups=(0, 3),
+    use_shadows=False,
+    use_textures=True,
+  )
+  cfg.scene.sensors = (cfg.scene.sensors or ()) + (cam_cfg,)
+
+  param_kwargs: dict[str, Any] = {"sensor_name": cam_cfg.name}
+  if cam_type == "depth":
+    param_kwargs["cutoff_distance"] = 0.6
+    func = manipulation_mdp.camera_depth
+  else:
+    func = manipulation_mdp.camera_rgb
+
+  cfg.observations["camera"] = ObservationGroupCfg(
+    terms={
+      f"camera_d405_{cam_type}": ObservationTermCfg(func=func, params=param_kwargs)
+    },
+    enable_corruption=False,
+    concatenate_terms=True,
+  )
+
+  if cam_type == "rgb":
+    # Capped below 1.0 on purpose. The lift-cube task randomizes the full
+    # (0, 1) cube, but it sits on the default dark checker floor. This table is
+    # white, so a full-range sample can put a near-white block on a near-white
+    # background: ~9% of episodes would land above 0.8 luminance and ~1.5%
+    # would be all but invisible. 0.7 keeps every sample separable.
+    # shared_random keeps the block one colour. Without it every geom draws its
+    # own sample and the block renders two-toned: crossbar and stem in
+    # unrelated hues. The lift-cube task never hit this because its cube is a
+    # single geom.
+    #
+    # With a visible goal the block must also stay distinguishable from the
+    # green footprint, so its channels are sampled per-axis into warm hues
+    # instead of the full colour cube.
+    color_ranges: Any = (
+      {0: (0.45, 0.95), 1: (0.0, 0.40), 2: (0.0, 0.40)} if visual_goal else (0.0, 0.7)
+    )
+    cfg.events["t_color"] = EventTermCfg(
+      func=dr.geom_rgba,
+      mode="reset",
+      params={
+        "asset_cfg": SceneEntityCfg("t_object", geom_names=(".*",)),
+        "operation": "abs",
+        "distribution": "uniform",
+        "axes": [0, 1, 2],
+        "ranges": color_ranges,
+        "shared_random": True,
+      },
+    )
+
+  # Drop privileged block state from the actor; it comes from the camera now.
+  actor_obs = cfg.observations["actor"]
+  actor_obs.terms.pop("ee_to_t")
+  actor_obs.terms.pop("t_to_goal")
+
+  if visual_goal:
+    if cam_type != "rgb":
+      raise ValueError(
+        "visual_goal requires cam_type='rgb'. The footprint is 1 mm tall, which "
+        "is far below what the depth cutoff resolves, so it cannot be seen in "
+        "depth even though it is rendered."
+      )
+    # The goal is read off the image, so it can move: randomizing it is the
+    # whole point, otherwise the policy just memorizes one location.
+    cfg.events["reset_t_goal"].params["pose_range"] = {
+      "x": (-0.02, 0.02),
+      "y": (-0.10, 0.10),
+      "yaw": (-3.14, 3.14),
+    }
+  else:
+    # The footprint is not legible to the policy, so hand it the target pose.
+    actor_obs.terms["goal_pose"] = ObservationTermCfg(
+      func=manipulation_mdp.goal_pose_in_base,
+      params={"goal_name": "t_goal"},
+      # NOTE: No noise on the goal pose.
     )
 
   return cfg

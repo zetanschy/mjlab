@@ -148,3 +148,21 @@ def yam_multi_cube_seg_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
       "critic": ("critic", "camera"),
     },
   )
+
+
+def yam_push_t_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  cfg = yam_lift_cube_ppo_runner_cfg()
+  cfg.experiment_name = "yam_push_t"
+  cfg.max_iterations = 6_000
+  return cfg
+
+
+def yam_push_t_vision_ppo_runner_cfg(
+  cam_type: str = "depth",
+) -> RslRlOnPolicyRunnerCfg:
+  # Per-modality experiment name so the rgb and depth runs do not write
+  # checkpoints into the same log directory.
+  cfg = yam_lift_cube_vision_ppo_runner_cfg()
+  cfg.experiment_name = f"yam_push_t_{cam_type}"
+  cfg.max_iterations = 6_000
+  return cfg

@@ -12,7 +12,12 @@ from mjlab.tasks.manipulation.mdp.commands import (
   LiftingCommand,
   MultiCubeLiftingCommand,
 )
-from mjlab.utils.lab_api.math import quat_apply, quat_inv
+from mjlab.utils.lab_api.math import (
+  euler_xyz_from_quat,
+  quat_apply,
+  quat_inv,
+  wrap_to_pi,
+)
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
@@ -151,3 +156,74 @@ def camera_target_cube_mask(
   mask = (obj_ids.unsqueeze(-1) == target_ids.unsqueeze(1).unsqueeze(1)).any(-1)
   mask = mask & is_geom
   return mask.float().unsqueeze(1)  # (B, 1, H, W)
+
+
+# --- Push-T ------------------------------------------------------------------
+# The goal is a mocap entity in the scene rather than a command term, so these
+# read the target pose straight off the scene. That keeps them valid if the goal
+# is later randomized per episode.
+
+
+def _planar_yaw(quat: torch.Tensor) -> torch.Tensor:
+  """Yaw angle about +z, in radians."""
+  return euler_xyz_from_quat(quat)[2]
+
+
+def ee_to_object_planar(
+  env: ManagerBasedRlEnv,
+  object_name: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """XY vector from end effector to object, in the robot base frame."""
+  return ee_to_object_distance(env, object_name, asset_cfg)[:, :2]
+
+
+def object_to_goal_pose_error(
+  env: ManagerBasedRlEnv,
+  object_name: str,
+  goal_name: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Planar pose error to the goal as (dx, dy, sin(dyaw), cos(dyaw)).
+
+  dx/dy are expressed in the robot base frame; dyaw is the object-to-goal yaw
+  difference. Yaw is split into sin/cos so the observation stays continuous
+  across the +/-pi wrap.
+  """
+  robot: Entity = env.scene[asset_cfg.name]
+  obj: Entity = env.scene[object_name]
+  goal: Entity = env.scene[goal_name]
+
+  delta_w = goal.data.root_link_pos_w - obj.data.root_link_pos_w
+  base_quat_w = robot.data.root_link_quat_w
+  delta_b = quat_apply(quat_inv(base_quat_w), delta_w)[:, :2]
+
+  dyaw = wrap_to_pi(
+    _planar_yaw(goal.data.root_link_quat_w) - _planar_yaw(obj.data.root_link_quat_w)
+  )
+  return torch.cat(
+    [delta_b, dyaw.sin().unsqueeze(-1), dyaw.cos().unsqueeze(-1)], dim=-1
+  )
+
+
+def goal_pose_in_base(
+  env: ManagerBasedRlEnv,
+  goal_name: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Goal footprint pose as (x, y, sin(yaw), cos(yaw)) in the robot base frame.
+
+  The depth camera cannot see the goal: the footprint is 1 mm tall and lives in
+  geom group 2, which the camera does not render. So the vision policy is told
+  where the goal is through this term instead.
+  """
+  robot: Entity = env.scene[asset_cfg.name]
+  goal: Entity = env.scene[goal_name]
+  base_quat_w = robot.data.root_link_quat_w
+  goal_pos_b = quat_apply(
+    quat_inv(base_quat_w), goal.data.root_link_pos_w - robot.data.root_link_pos_w
+  )[:, :2]
+  yaw = wrap_to_pi(_planar_yaw(goal.data.root_link_quat_w) - _planar_yaw(base_quat_w))
+  return torch.cat(
+    [goal_pos_b, yaw.sin().unsqueeze(-1), yaw.cos().unsqueeze(-1)], dim=-1
+  )
