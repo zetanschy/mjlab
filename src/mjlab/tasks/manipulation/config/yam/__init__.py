@@ -6,13 +6,24 @@ from .env_cfgs import (
   yam_lift_cube_vision_env_cfg,
   yam_multi_cube_seg_env_cfg,
   yam_push_t_env_cfg,
+  yam_push_t_hybrid_env_cfg,
+  yam_push_t_maniskill_env_cfg,
+  yam_push_t_reachable_env_cfg,
+  yam_push_t_reachable_state_env_cfg,
+  yam_push_t_replica_env_cfg,
   yam_push_t_vision_env_cfg,
 )
 from .rl_cfg import (
   yam_lift_cube_ppo_runner_cfg,
   yam_lift_cube_vision_ppo_runner_cfg,
   yam_multi_cube_seg_ppo_runner_cfg,
+  yam_push_t_hybrid_ppo_runner_cfg,
+  yam_push_t_maniskill_ppo_runner_cfg,
   yam_push_t_ppo_runner_cfg,
+  yam_push_t_reachable_ppo_runner_cfg,
+  yam_push_t_reachable_state_ppo_runner_cfg,
+  yam_push_t_replica_gravcomp_ppo_runner_cfg,
+  yam_push_t_replica_ppo_runner_cfg,
   yam_push_t_vision_ppo_runner_cfg,
 )
 
@@ -77,5 +88,55 @@ register_mjlab_task(
   env_cfg=yam_push_t_vision_env_cfg(cam_type="rgb", visual_goal=True),
   play_env_cfg=yam_push_t_vision_env_cfg(cam_type="rgb", visual_goal=True, play=True),
   rl_cfg=yam_push_t_vision_ppo_runner_cfg(cam_type="rgb_visual_goal"),
+  runner_cls=ManipulationOnPolicyRunner,
+)
+
+register_mjlab_task(
+  task_id="Mjlab-Push-T-Yam-Rgb-Maniskill",
+  env_cfg=yam_push_t_maniskill_env_cfg(),
+  play_env_cfg=yam_push_t_maniskill_env_cfg(play=True),
+  rl_cfg=yam_push_t_maniskill_ppo_runner_cfg(),
+  runner_cls=ManipulationOnPolicyRunner,
+)
+
+register_mjlab_task(
+  task_id="Mjlab-Push-T-Yam-Rgb-Hybrid",
+  env_cfg=yam_push_t_hybrid_env_cfg(),
+  play_env_cfg=yam_push_t_hybrid_env_cfg(play=True),
+  rl_cfg=yam_push_t_hybrid_ppo_runner_cfg(),
+  runner_cls=ManipulationOnPolicyRunner,
+)
+
+register_mjlab_task(
+  task_id="Mjlab-Push-T-Yam-Replica",
+  env_cfg=yam_push_t_replica_env_cfg(),
+  play_env_cfg=yam_push_t_replica_env_cfg(play=True),
+  rl_cfg=yam_push_t_replica_ppo_runner_cfg(),
+  runner_cls=ManipulationOnPolicyRunner,
+)
+
+register_mjlab_task(
+  task_id="Mjlab-Push-T-Yam-Replica-Gravcomp",
+  env_cfg=yam_push_t_replica_env_cfg(relative_action=True, gravcomp=True),
+  play_env_cfg=yam_push_t_replica_env_cfg(
+    relative_action=True, gravcomp=True, play=True
+  ),
+  rl_cfg=yam_push_t_replica_gravcomp_ppo_runner_cfg(),
+  runner_cls=ManipulationOnPolicyRunner,
+)
+
+register_mjlab_task(
+  task_id="Mjlab-Push-T-Yam-Reachable",
+  env_cfg=yam_push_t_reachable_env_cfg(),
+  play_env_cfg=yam_push_t_reachable_env_cfg(play=True),
+  rl_cfg=yam_push_t_reachable_ppo_runner_cfg(),
+  runner_cls=ManipulationOnPolicyRunner,
+)
+
+register_mjlab_task(
+  task_id="Mjlab-Push-T-Yam-Reachable-State",
+  env_cfg=yam_push_t_reachable_state_env_cfg(),
+  play_env_cfg=yam_push_t_reachable_state_env_cfg(play=True),
+  rl_cfg=yam_push_t_reachable_state_ppo_runner_cfg(),
   runner_cls=ManipulationOnPolicyRunner,
 )

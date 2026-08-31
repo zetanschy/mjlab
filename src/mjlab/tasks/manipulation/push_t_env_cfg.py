@@ -15,6 +15,7 @@ from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.action_manager import ActionTermCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
+from mjlab.managers.metrics_manager import MetricsTermCfg
 from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
@@ -39,8 +40,11 @@ SPAWN_YAW_RANGE = (-3.14, 3.14)
 WORKSPACE_X = (0.12, 0.60)
 WORKSPACE_Y = (-0.35, 0.35)
 
-SUCCESS_POS_TOL = 0.02  # 2 cm
-SUCCESS_YAW_TOL = 0.26  # ~15 degrees
+# Area overlap required to count as solved. gym-pusht uses 0.95, ManiSkill 0.90.
+# Held lower here: at 0.90 the bonus fired only on episodes where the block
+# happened to spawn near the goal yaw, so it rewarded luck instead of shaping
+# rotation, and vanished once position sharpened.
+SUCCESS_COVERAGE = 0.70
 
 
 def make_push_t_env_cfg() -> ManagerBasedRlEnvCfg:
@@ -163,38 +167,58 @@ def make_push_t_env_cfg() -> ManagerBasedRlEnvCfg:
   )
 
   rewards = {
-    # Coarse shaping: get the end effector to the block, then the block to the
-    # footprint. Gated so approach is learned before placement.
-    "push": RewardTermCfg(
-      func=manipulation_mdp.push_staged_reward,
+    # Additive, following ManiSkill's PushT. Position and orientation are
+    # separate terms so a wrong yaw cannot zero the translation gradient, which
+    # is what stalled the previous multiplicative version.
+    "position": RewardTermCfg(
+      func=manipulation_mdp.push_position_reward,
       weight=1.0,
       params={
         "object_name": OBJECT_NAME,
         "goal_name": GOAL_NAME,
-        "reaching_std": 0.15,
-        "placing_std": 0.20,
+        "scale": 5.0,
+      },
+    ),
+    "orientation": RewardTermCfg(
+      func=manipulation_mdp.push_orientation_reward,
+      weight=2.5,
+      params={
+        "object_name": OBJECT_NAME,
+        "goal_name": GOAL_NAME,
+        "gate_distance": 0.08,
+      },
+    ),
+    # Area overlap, the quantity gym-pusht actually scores. Zero until the
+    # shapes touch, so it refines what position/orientation get close to.
+    # The T partially overlaps itself when rotated, so coverage alone is not
+    # monotonic in yaw: it peaks near 115 deg. Against orientation at 2.5, the
+    # total stays monotonic for any coverage weight up to ~0.71; 0.6 keeps a
+    # margin while still paying enough to matter once the block is placed.
+    "coverage": RewardTermCfg(
+      func=manipulation_mdp.object_goal_coverage,
+      weight=0.6,
+      params={"object_name": OBJECT_NAME, "goal_name": GOAL_NAME},
+    ),
+    # Capped at 0.05 internally, an order of magnitude under the task terms.
+    # At parity it is farmable: the policy parks on the block and never pushes.
+    "ee_guidance": RewardTermCfg(
+      func=manipulation_mdp.push_ee_guidance_reward,
+      weight=1.0,
+      params={
+        "object_name": OBJECT_NAME,
+        "goal_name": GOAL_NAME,
+        "scale": 5.0,
+        "gate_distance": 0.05,
         "asset_cfg": SceneEntityCfg("robot", site_names=()),  # Set per-robot.
       },
     ),
-    # Fine shaping: position and yaw together.
-    "pose_match": RewardTermCfg(
-      func=manipulation_mdp.object_goal_pose_reward,
+    "success": RewardTermCfg(
+      func=manipulation_mdp.push_coverage_success,
       weight=2.0,
       params={
         "object_name": OBJECT_NAME,
         "goal_name": GOAL_NAME,
-        "pos_std": 0.05,
-        "yaw_std": 0.50,
-      },
-    ),
-    "success": RewardTermCfg(
-      func=manipulation_mdp.push_success_bonus,
-      weight=3.0,
-      params={
-        "object_name": OBJECT_NAME,
-        "goal_name": GOAL_NAME,
-        "pos_tol": SUCCESS_POS_TOL,
-        "yaw_tol": SUCCESS_YAW_TOL,
+        "threshold": SUCCESS_COVERAGE,
       },
     ),
     # Keep it a pushing task: no lifting, no flipping the block on its side.
@@ -283,3 +307,48 @@ def make_push_t_env_cfg() -> ManagerBasedRlEnvCfg:
     decimation=4,
     episode_length_s=20.0,
   )
+
+
+def make_push_t_metrics() -> dict[str, MetricsTermCfg]:
+  """Per-component metrics, logged under Episode_Metrics/*.
+
+  Run 7 logged only the aggregate reward, so whether the block was ever being
+  rotated had to be inferred after the fact -- and inferred wrongly. Every kill
+  gate for a Push-T run should read these, never Episode_Reward/*, which can
+  move for arithmetic reasons that have nothing to do with skill.
+  """
+  names = {"object_name": OBJECT_NAME, "goal_name": GOAL_NAME}
+  return {
+    # reduce="last": terminal pose is the question; averaging over the episode
+    # buries the ending in the approach.
+    "yaw_err_deg": MetricsTermCfg(
+      func=manipulation_mdp.yaw_err_deg, params=names, reduce="last"
+    ),
+    "pos_err_m": MetricsTermCfg(
+      func=manipulation_mdp.pos_err_m, params=names, reduce="last"
+    ),
+    "coverage": MetricsTermCfg(
+      func=manipulation_mdp.coverage, params=names, reduce="last"
+    ),
+    "success_pose": MetricsTermCfg(
+      func=manipulation_mdp.success_pose, params=names, reduce="last"
+    ),
+    "success_cov90": MetricsTermCfg(
+      func=manipulation_mdp.success_coverage, params=names, reduce="last"
+    ),
+    "block_travel_m": MetricsTermCfg(
+      func=manipulation_mdp.block_travel_m, params=names, reduce="last"
+    ),
+    # Compare against UNIFORM_YAW_NULL = 0.1875. Mean over the episode is right
+    # here: it is a distributional check, not a terminal one.
+    "rot_component": MetricsTermCfg(
+      func=manipulation_mdp.rot_component, params=names, reduce="mean"
+    ),
+    # "max": any lift at all matters, an episode mean would hide a brief one.
+    "block_height_mm": MetricsTermCfg(
+      func=manipulation_mdp.block_height_mm, params=names, reduce="max"
+    ),
+    "block_tilt_dot": MetricsTermCfg(
+      func=manipulation_mdp.block_tilt_dot, params=names, reduce="mean"
+    ),
+  }

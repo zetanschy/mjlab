@@ -189,3 +189,30 @@ __all__ = [
   "get_white_table_cfg",
   "make_push_t_scene_cfg",
 ]
+
+
+def get_yam_gravcomp_robot_cfg():
+  """YAM with gravity compensation enabled on every body.
+
+  Measured on the stock arm: 2 s of ZERO action drops the end effector 98.1 mm,
+  with joint4 moving 0.165 rad unforced. Commanding a joint at full scale moves
+  it ~0.054 rad over the same window, so the sag exceeds the policy's own
+  authority by roughly 3x -- in a task whose entire vertical working window is
+  the block's 20 mm. With gravcomp the same measurement gives 0.0 mm.
+
+  Every Push-T run so far has been fighting a position-dependent bias five
+  times larger than the thing it was trying to touch.
+  """
+  import dataclasses
+
+  from mjlab.asset_zoo.robots import get_yam_robot_cfg
+  from mjlab.asset_zoo.robots.i2rt_yam.yam_constants import get_spec
+
+  def _spec():
+    spec = get_spec()
+    for body in spec.bodies:
+      if body.name != "world":
+        body.gravcomp = 1.0
+    return spec
+
+  return dataclasses.replace(get_yam_robot_cfg(), spec_fn=_spec)

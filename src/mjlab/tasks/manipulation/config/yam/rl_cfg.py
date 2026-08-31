@@ -166,3 +166,72 @@ def yam_push_t_vision_ppo_runner_cfg(
   cfg.experiment_name = f"yam_push_t_{cam_type}"
   cfg.max_iterations = 6_000
   return cfg
+
+
+def yam_push_t_maniskill_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  cfg = yam_lift_cube_vision_ppo_runner_cfg()
+  cfg.experiment_name = "yam_push_t_maniskill"
+  cfg.max_iterations = 6_000
+  return cfg
+
+
+def yam_push_t_hybrid_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  cfg = yam_lift_cube_vision_ppo_runner_cfg()
+  cfg.experiment_name = "yam_push_t_hybrid"
+  cfg.max_iterations = 6_000
+  return cfg
+
+
+def yam_push_t_replica_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """State MLP runner with the discount matched to the episode.
+
+  gamma=0.995 gives 1/(1-gamma) = 200 = the full 200-step episode, a
+  horizon/episode ratio of 1.0. Run 7 used gamma=0.99 over 1000-step episodes,
+  a ratio of 0.10, so the value function could not see the end of an episode
+  from its start -- and a reorientation payoff arrives at the end.
+  """
+  cfg = yam_lift_cube_ppo_runner_cfg()
+  cfg.experiment_name = "yam_push_t_replica"
+  cfg.max_iterations = 4_000
+  cfg.num_steps_per_env = 24
+  cfg.algorithm.gamma = 0.99
+  cfg.algorithm.lam = 0.95
+  return cfg
+
+
+def yam_push_t_replica_gravcomp_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  cfg = yam_push_t_replica_ppo_runner_cfg()
+  cfg.experiment_name = "yam_push_t_replica_gravcomp"
+  return cfg
+
+
+def yam_push_t_reachable_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  cfg = yam_push_t_hybrid_ppo_runner_cfg()
+  cfg.experiment_name = "yam_push_t_reachable"
+  cfg.max_iterations = 2_500
+  return cfg
+
+
+def yam_push_t_reachable_state_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """State runner with a floor under the exploration noise.
+
+  Side contact only became geometrically reachable once the action scale was
+  widened, but reaching it is a specific descent the policy still has to find.
+  At iteration 1000 of the first run with the wider box, the policy's median
+  minimum end-effector height was 123 mm -- higher than run 7 managed with the
+  NARROWER box -- and only 3.1% of episodes ever reached side-contact geometry,
+  with mean_std down to 0.026. There was no exploration left to find it with.
+
+  std_range floors sigma at 0.2 so the descent stays discoverable. Raising
+  entropy_coef alone does not bound sigma; this does.
+  """
+  cfg = yam_lift_cube_ppo_runner_cfg()
+  cfg.experiment_name = "yam_push_t_reachable_state"
+  cfg.max_iterations = 5_000
+  cfg.actor.distribution_cfg = {
+    "class_name": "GaussianDistribution",
+    "init_std": 1.0,
+    "std_type": "scalar",
+    "std_range": (0.2, 1.0),
+  }
+  return cfg

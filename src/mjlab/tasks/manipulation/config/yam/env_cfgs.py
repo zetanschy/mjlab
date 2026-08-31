@@ -10,7 +10,10 @@ from mjlab.asset_zoo.robots import (
 from mjlab.entity import EntityCfg
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp import dr
-from mjlab.envs.mdp.actions import JointPositionActionCfg
+from mjlab.envs.mdp.actions import (
+  JointPositionActionCfg,
+  RelativeJointPositionActionCfg,
+)
 from mjlab.managers import (
   ObservationGroupCfg,
   ObservationTermCfg,
@@ -22,7 +25,12 @@ from mjlab.sensor import CameraSensorCfg, ContactSensorCfg
 from mjlab.tasks.manipulation import mdp as manipulation_mdp
 from mjlab.tasks.manipulation.lift_cube_env_cfg import make_lift_cube_env_cfg
 from mjlab.tasks.manipulation.mdp import MultiCubeLiftingCommandCfg
-from mjlab.tasks.manipulation.push_t_env_cfg import make_push_t_env_cfg
+from mjlab.tasks.manipulation.push_t_env_cfg import (
+  make_push_t_env_cfg,
+  make_push_t_metrics,
+)
+from mjlab.tasks.manipulation.push_t_scene import get_yam_gravcomp_robot_cfg
+from mjlab.tasks.velocity import mdp as velocity_mdp
 
 
 def get_cube_spec(
@@ -308,7 +316,7 @@ def yam_push_t_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.observations["actor"].terms["ee_to_t"].params["asset_cfg"].site_names = (
     "grasp_site",
   )
-  cfg.rewards["push"].params["asset_cfg"].site_names = ("grasp_site",)
+  cfg.rewards["ee_guidance"].params["asset_cfg"].site_names = ("grasp_site",)
 
   fingertip_geoms = r"[lr]f_down(6|7|8|9|10|11)_collision"
   cfg.events["fingertip_friction_slide"].params[
@@ -384,10 +392,14 @@ def yam_push_t_vision_env_cfg(
     # single geom.
     #
     # With a visible goal the block must also stay distinguishable from the
-    # green footprint, so its channels are sampled per-axis into warm hues
-    # instead of the full colour cube.
+    # green footprint, so channels are sampled per-axis rather than over the
+    # full colour cube. Separation rides on red: the block never drops below
+    # 0.55 while the footprint sits at 0.15, which leaves green free to range
+    # high. That keeps the block's original yellow (1.0, 0.85, 0.1) in
+    # distribution -- capping green would have excluded it -- while holding the
+    # closest reachable colour 0.40 away from the footprint's green.
     color_ranges: Any = (
-      {0: (0.45, 0.95), 1: (0.0, 0.40), 2: (0.0, 0.40)} if visual_goal else (0.0, 0.7)
+      {0: (0.55, 1.0), 1: (0.0, 0.9), 2: (0.0, 0.35)} if visual_goal else (0.0, 0.7)
     )
     cfg.events["t_color"] = EventTermCfg(
       func=dr.geom_rgba,
@@ -429,4 +441,286 @@ def yam_push_t_vision_env_cfg(
       # NOTE: No noise on the goal pose.
     )
 
+  return cfg
+
+
+def yam_push_t_maniskill_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Fixed-goal RGB Push-T scored by ManiSkill's reward, unmodified.
+
+  A control for the tuned variants. The reward here is one term reproducing
+  ManiSkill's, with no coverage shaping, no gating, and none of the action or
+  joint penalties the other tasks carry. If this learns and the tuned tasks do
+  not, the additions are at fault; if neither learns, the difference is the
+  robot -- a 7-DoF arm under joint-position control with a parallel-jaw
+  gripper, against ManiSkill's end-effector-controlled rod.
+  """
+  cfg = yam_push_t_vision_env_cfg(cam_type="rgb", visual_goal=False, play=play)
+
+  cfg.rewards = {
+    "maniskill": RewardTermCfg(
+      func=manipulation_mdp.maniskill_push_t_reward,
+      weight=1.0,
+      params={
+        "object_name": "t_object",
+        "goal_name": "t_goal",
+        "success_threshold": 0.90,
+        "asset_cfg": SceneEntityCfg("robot", site_names=("grasp_site",)),
+      },
+    ),
+  }
+  # The curriculum ramps joint_vel_hinge, which no longer exists.
+  cfg.curriculum = {}
+  return cfg
+
+
+def yam_push_t_hybrid_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """ManiSkill's task reward plus the penalties this arm needs to stay stable.
+
+  Run at 3.0 rather than the normalized 1.0 so it keeps ManiSkill's native
+  scale, which is what the penalty weights below were tuned against.
+
+  ManiSkill carries no action, joint-limit or joint-velocity penalties: its
+  agent is a rod under end-effector control, so there is nothing to stabilize.
+  Reproduced verbatim on a 7-DoF arm under joint-position control it flails --
+  driving into the table on 58% of episodes and knocking the block out of the
+  workspace on 25%, with reward peaking at iteration 1626 and decaying after.
+  The three penalties here are the ones that held both at 0% in the tuned runs.
+
+  No curriculum. The tuned tasks ramp joint_vel_hinge to -1.0, which is a
+  minority of their ~4.3 reward span but would be a third of this one, and
+  pushing is a task that needs the arm to keep moving.
+  """
+  cfg = yam_push_t_vision_env_cfg(cam_type="rgb", visual_goal=False, play=play)
+
+  cfg.rewards = {
+    "maniskill": RewardTermCfg(
+      func=manipulation_mdp.maniskill_push_t_reward,
+      weight=3.0,
+      params={
+        "object_name": "t_object",
+        "goal_name": "t_goal",
+        "success_threshold": 0.90,
+        "asset_cfg": SceneEntityCfg("robot", site_names=("grasp_site",)),
+      },
+    ),
+    "action_rate_l2": RewardTermCfg(func=velocity_mdp.action_rate_l2, weight=-0.01),
+    "joint_pos_limits": RewardTermCfg(
+      func=velocity_mdp.joint_pos_limits,
+      weight=-10.0,
+      params={"asset_cfg": SceneEntityCfg("robot", joint_names=(".*",))},
+    ),
+    "joint_vel_hinge": RewardTermCfg(
+      func=manipulation_mdp.joint_velocity_hinge_penalty,
+      weight=-0.01,
+      params={
+        "max_vel": 0.5,
+        "asset_cfg": SceneEntityCfg("robot", joint_names=(".*",)),
+      },
+    ),
+  }
+  cfg.curriculum = {}
+  return cfg
+
+
+def yam_push_t_replica_env_cfg(
+  relative_action: bool = False,
+  gravcomp: bool = False,
+  episode_length_s: float = 20.0,
+  play: bool = False,
+) -> ManagerBasedRlEnvCfg:
+  """State-based Push-T with the MDP defects fixed. Phase 1 of the redesign.
+
+  Forked from the STATE task, not a vision one, on purpose: no completed run
+  has ever trained the state variant (both attempts stopped at 9 and 11
+  iterations), so whether a 32x32 wrist camera can even resolve the T's yaw
+  sign is untested. Settling that costs a fast run, not a 3.5 hour one.
+
+  Four changes, each measured rather than assumed:
+
+  Nothing about the robot changes by default. Two options exist for ablation and
+  are coupled, not independent: a relative joint action has no position holding
+  (its zero-action target is wherever the arm already is, so gravity drags the
+  target down with it -- measured 288 mm of sag in 2 s against the absolute
+  term's 98 mm steady-state), and it is therefore only usable with gravcomp on.
+  Gravcomp itself cancels gravity on every link, which is a change to the arm's
+  dynamics whose faithfulness depends on whether the real controller compensates
+  gravity; the YAM actuators here are a pure PD servo with no gravity
+  feedforward. Neither is on by default, because droop is not established as a
+  blocker: the lift-cube policy reaches 93.8% within 5 cm on this arm with the
+  full 98 mm of it.
+
+  uniform action scale -- the stock scales span 63.8x (joint2 0.16 rad, joint6
+    5.52 rad), so joint6 samples routinely breached a -10.0 soft limit penalty
+    worth ~70% of the task reward. Policy/mean_std collapsed 0.9995 -> 0.0353 by
+    iteration 771 and spent 32.1% of run 7 below 0.10. A uniform 0.15 rad
+    removes the disparity while keeping the same authority: measured
+    end-effector speed 114 mm/s against the stock config's 115 mm/s.
+
+  reachable success -- coverage >= 0.90 needs |dyaw| <= 4.6 deg AND |d| <= 2.9
+    mm and has never once fired. 2 cm / 15 deg, conjoined with flatness so it
+    cannot be won by lifting.
+
+  horizon matched to the episode -- 200 steps against gamma=0.995 in the runner,
+    a ratio of 1.0 where run 7 was at 0.10.
+  """
+  cfg = yam_push_t_env_cfg(play=play)
+
+  if gravcomp:
+    cfg.scene.entities = dict(cfg.scene.entities)
+    cfg.scene.entities["robot"] = get_yam_gravcomp_robot_cfg()
+
+  if relative_action:
+    if not gravcomp:
+      raise ValueError(
+        "relative_action requires gravcomp: the relative term re-anchors its "
+        "target to the measured position every substep, so with gravity on and "
+        "zero action the arm sags 288 mm in 2 s instead of holding its pose."
+      )
+    cfg.actions = {
+      "joint_pos": RelativeJointPositionActionCfg(
+        entity_name="robot",
+        actuator_names=(".*",),
+        scale={"joint[1-6]": 0.1, "left_finger": 0.01},
+      )
+    }
+  else:
+    pass  # Keep the stock action from yam_push_t_env_cfg.
+
+  cfg.rewards = {
+    "staged_pose": RewardTermCfg(
+      func=manipulation_mdp.staged_pose_reward,
+      weight=2.0,
+      params={"object_name": "t_object", "goal_name": "t_goal", "yaw_weight": 1.0},
+    ),
+    "ee_guidance": RewardTermCfg(
+      func=manipulation_mdp.push_ee_guidance_reward,
+      weight=1.0,
+      params={
+        "object_name": "t_object",
+        "goal_name": "t_goal",
+        "gate_distance": 0.05,
+        "asset_cfg": SceneEntityCfg("robot", site_names=("grasp_site",)),
+      },
+    ),
+    "success": RewardTermCfg(
+      func=manipulation_mdp.push_coverage_success,
+      weight=2.0,
+      params={"object_name": "t_object", "goal_name": "t_goal", "threshold": 0.70},
+    ),
+    "action_rate_l2": RewardTermCfg(func=velocity_mdp.action_rate_l2, weight=-0.01),
+    "joint_pos_limits": RewardTermCfg(
+      func=velocity_mdp.joint_pos_limits,
+      weight=-10.0,
+      params={"asset_cfg": SceneEntityCfg("robot", joint_names=(".*",))},
+    ),
+    "joint_vel_hinge": RewardTermCfg(
+      func=manipulation_mdp.joint_velocity_hinge_penalty,
+      weight=-0.01,
+      params={
+        "max_vel": 1.2,
+        "asset_cfg": SceneEntityCfg("robot", joint_names=(".*",)),
+      },
+    ),
+  }
+
+  cfg.metrics = make_push_t_metrics()
+  cfg.curriculum = {}
+  # 20 s (1000 steps) by default, matching the hybrid run. The 4 s / 200-step
+  # variant was tried alongside the reward change and the block stopped moving
+  # entirely -- travel fell from the hybrid's 0.138 m back to the untracked
+  # 0.068 m of an untrained policy, with mean_std collapsing to 0.021 by
+  # iteration 600. Pushing was a solved skill and 200 steps was not enough
+  # exploration per episode to rediscover it.
+  cfg.episode_length_s = episode_length_s
+  return cfg
+
+
+def yam_push_t_reachable_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Run 7's hybrid, changing exactly one thing: the success predicate.
+
+  Run 7 is the only configuration that has ever learned to push (0.020 m final
+  position error, 52% within 2 cm). Its reward already contains an ungated
+  rotation term at parity with position, and rotation still never moved. The
+  one component of that reward which has never once fired is the success
+  bonus: coverage >= 0.90 requires |dyaw| <= 4.6 deg AND |d| <= 2.9 mm jointly,
+  and it logged 0.0000 across roughly 590M steps. So the largest term in the
+  objective -- 3.0, against a shaped ceiling of about 0.74 -- has contributed
+  no gradient at all.
+
+  Swapping it for a reachable 2 cm / 15 deg predicate turns that dead cliff
+  into a live one, and the cliff is the only part of the objective that pays
+  discontinuously for closing the last 60 deg of yaw. Everything else is
+  byte-identical to run 7.
+  """
+  cfg = yam_push_t_hybrid_env_cfg(play=play)
+  cfg.rewards["maniskill"].params["success_mode"] = "pose"
+  cfg.rewards["maniskill"].params["pos_tol"] = 0.02
+  cfg.rewards["maniskill"].params["yaw_tol_deg"] = 15.0
+  cfg.metrics = make_push_t_metrics()
+  return cfg
+
+
+def yam_push_t_reachable_state_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """State-observation twin of the reachable task. The iteration harness.
+
+  Same reward as the RGB version, so the pair is a clean one-variable test of
+  whether a 32x32 wrist camera can resolve the T's yaw -- which no completed run
+  has ever checked, since both state attempts stopped at 9 and 11 iterations.
+
+  It is also roughly four times faster per iteration with no camera to render,
+  which is what makes reward iteration practical at all.
+  """
+  cfg = yam_push_t_env_cfg(play=play)
+
+  # The reach fix. With the stock scales the arm cannot get its gripper down
+  # beside the block AT ALL: over 4096 constant actions spanning the action box,
+  # the lowest end-effector height reachable is 60.2 mm and zero poses put a
+  # gripper geom at the block's side. The block's top is at 20 mm, so every run
+  # so far could only graze the block's TOP face -- run 7's trained policy dips
+  # to 41.9 mm by dynamic overshoot, which drags the block along (143 mm of
+  # travel) but cannot apply controlled yaw torque. That is exactly the
+  # nine-run pattern of "position works, rotation never".
+  #
+  # A uniform 0.8 rad makes side contact reachable: min EE height 10.9 mm and
+  # 2.12% of the action box puts a gripper geom beside the block, against
+  # 0.00% at the stock scales. 1.2 rad is worse (1.64%) -- too coarse.
+  cfg.actions = {
+    "joint_pos": JointPositionActionCfg(
+      entity_name="robot",
+      actuator_names=(".*",),
+      scale={"joint[1-6]": 0.8, "left_finger": 0.02},
+      use_default_offset=True,
+    )
+  }
+
+  cfg.rewards = {
+    "maniskill": RewardTermCfg(
+      func=manipulation_mdp.maniskill_push_t_reward,
+      weight=3.0,
+      params={
+        "object_name": "t_object",
+        "goal_name": "t_goal",
+        "success_mode": "pose",
+        "pos_tol": 0.02,
+        "yaw_tol_deg": 15.0,
+        "asset_cfg": SceneEntityCfg("robot", site_names=("grasp_site",)),
+      },
+    ),
+    "action_rate_l2": RewardTermCfg(func=velocity_mdp.action_rate_l2, weight=-0.01),
+    "joint_pos_limits": RewardTermCfg(
+      func=velocity_mdp.joint_pos_limits,
+      weight=-10.0,
+      params={"asset_cfg": SceneEntityCfg("robot", joint_names=(".*",))},
+    ),
+    "joint_vel_hinge": RewardTermCfg(
+      func=manipulation_mdp.joint_velocity_hinge_penalty,
+      weight=-0.01,
+      params={
+        "max_vel": 0.5,
+        "asset_cfg": SceneEntityCfg("robot", joint_names=(".*",)),
+      },
+    ),
+  }
+  cfg.metrics = make_push_t_metrics()
+  cfg.curriculum = {}
   return cfg
