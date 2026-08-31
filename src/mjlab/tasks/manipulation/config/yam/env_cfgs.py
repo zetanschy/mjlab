@@ -786,3 +786,40 @@ def yam_push_t_precise_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     },
   )
   return cfg
+
+
+def yam_push_t_precise_random_goal_env_cfg(
+  play: bool = False,
+) -> ManagerBasedRlEnvCfg:
+  """Precise camera Push-T with the goal randomized per episode.
+
+  Forked from the task verified at 100% pose success (3.1 mm, 0.5 deg) and
+  changes only the goal distribution.
+
+  The fixed-goal policy cannot tolerate a moved goal at all. Measured: shift the
+  footprint 10 cm in y and terminal error goes from 3.1 mm to 162 mm, yaw from
+  0.5 to 82.9 deg -- and it does not fall back to the memorized location either,
+  it simply fails. The cause is in the observation normalizer: with the goal yaw
+  constant at 0 for every step of training, the sin and cos components of
+  goal_pose have std 2.0e-07 and exactly 0.0, so any other value divides by ~0
+  and the forward pass is meaningless. The policy never had a scale on that
+  input, so it could not use it even in principle.
+
+  Randomizing the goal gives those dimensions real variance, which is what makes
+  goal_pose a usable input rather than a constant the network is forced to
+  ignore. The reward reads the goal straight off the scene entity, so it follows
+  the randomization with no further change.
+
+  The footprint is also camera-visible here -- it carries group-3 geoms and the
+  camera renders groups (0, 3) -- so the goal reaches the policy through the
+  image as well as through state. Ranges keep the goal clear of the block's
+  spawn box: the block spawns at 0.28 +/- 0.05 in x, the goal at 0.40 +/- 0.02,
+  leaving at least 5 cm between them.
+  """
+  cfg = yam_push_t_precise_env_cfg(play=play)
+  cfg.events["reset_t_goal"].params["pose_range"] = {
+    "x": (-0.02, 0.02),
+    "y": (-0.10, 0.10),
+    "yaw": (-3.14, 3.14),
+  }
+  return cfg
