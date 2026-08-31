@@ -246,3 +246,10 @@ def yam_push_t_reachable_state_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
     "std_range": (0.2, 1.0),
   }
   return cfg
+
+
+def yam_push_t_precise_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  cfg = yam_push_t_reachable_ppo_runner_cfg()
+  cfg.experiment_name = "yam_push_t_precise"
+  cfg.max_iterations = 3_000
+  return cfg

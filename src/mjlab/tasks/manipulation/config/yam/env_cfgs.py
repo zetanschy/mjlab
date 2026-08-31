@@ -747,3 +747,42 @@ def yam_push_t_reachable_state_env_cfg(play: bool = False) -> ManagerBasedRlEnvC
   cfg.metrics = make_push_t_metrics()
   cfg.curriculum = {}
   return cfg
+
+
+def yam_push_t_precise_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Camera Push-T with a second, finer reward scale for tighter alignment.
+
+  Forked from the camera task that works (99.2% pose success at 20 mm / 15 deg)
+  and changes only the precision end of the objective.
+
+  Two changes:
+
+  A fine-scale bonus is ADDED alongside the coarse reward. The coarse terms are
+  saturated where the working policy sits -- at 17 mm the position kernel is at
+  0.419 of its 0.5 ceiling, and at 8.9 deg the rotation kernel is at 0.494,
+  leaving 1.2% of headroom -- so there is nothing left to earn by improving. The
+  bonus is ~0.01 at 30 mm / 20 deg and 1.0 at the goal, supplying gradient only
+  inside about 2 cm. It is added, not substituted: sharpening the coarse kernels
+  in place would flatten the far field that makes approach learnable at all.
+
+  The success predicate tightens from 20 mm / 15 deg to 10 mm / 8 deg. Tighter
+  than that would repeat the original mistake: coverage >= 0.90 needs 2.9 mm and
+  4.6 deg jointly, never fired once in ~590M steps, and contributed no gradient
+  at all. 10 mm / 8 deg is roughly half the current error, so it fires on the
+  better episodes and stays live rather than dead.
+  """
+  cfg = yam_push_t_reachable_env_cfg(play=play)
+
+  cfg.rewards["maniskill"].params["pos_tol"] = 0.010
+  cfg.rewards["maniskill"].params["yaw_tol_deg"] = 8.0
+  cfg.rewards["precision"] = RewardTermCfg(
+    func=manipulation_mdp.push_precision_bonus,
+    weight=2.0,
+    params={
+      "object_name": "t_object",
+      "goal_name": "t_goal",
+      "pos_scale": 20.0,
+      "yaw_scale": 3.0,
+    },
+  )
+  return cfg

@@ -542,3 +542,37 @@ def staged_pose_reward(
   position = torch.square(1.0 - torch.tanh(pos_scale * dist)) / 2.0
   orientation = torch.square((torch.cos(yaw_err) + 1.0) / 2.0) / 2.0
   return position * (1.0 + yaw_weight * 2.0 * orientation)
+
+
+def push_precision_bonus(
+  env: ManagerBasedRlEnv,
+  object_name: str,
+  goal_name: str,
+  pos_scale: float = 20.0,
+  yaw_scale: float = 3.0,
+) -> torch.Tensor:
+  """Fine-scale pose bonus, in [0, 1], for closing the last centimetre.
+
+  The coarse terms are saturated by the time the policy is any good. At the
+  working policy's 17 mm and 8.9 deg, the position kernel (1-tanh(5d))**2/2 sits
+  at 0.419 of 0.5 and the rotation kernel ((cos+1)/2)**2/2 at 0.494 of 0.5 --
+  1.2% of headroom. There is almost nothing left to earn by getting tighter, so
+  the policy correctly stops trying.
+
+  Sharpening those kernels in place would fix the near field and wreck the far
+  one: at k=40 the position term is 0.014 at 30 mm, which is the flat region
+  that made rotation unlearnable for twelve runs. So this is a SECOND scale,
+  added alongside the coarse reward rather than replacing it. Far from the goal
+  it is ~0 and contributes nothing; inside about 2 cm it supplies the gradient
+  the coarse term no longer has.
+
+  The two factors are multiplied, which is safe here in a way it was not when I
+  tried it on the coarse terms: this whole quantity is additive to a reward that
+  already has an independent position gradient, so a wrong yaw cannot zero the
+  approach signal. It only gates the *bonus*, not the task.
+  """
+  pos_err_sq, yaw_err = _goal_errors(env, object_name, goal_name)
+  dist = pos_err_sq.clamp_min(1e-12).sqrt()
+  fine_pos = torch.square(1.0 - torch.tanh(pos_scale * dist)) / 2.0
+  fine_yaw = torch.square(1.0 - torch.tanh(yaw_scale * yaw_err)) / 2.0
+  return 4.0 * fine_pos * fine_yaw
