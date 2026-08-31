@@ -206,9 +206,20 @@ def yam_push_t_replica_gravcomp_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
 
 
 def yam_push_t_reachable_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
-  cfg = yam_push_t_hybrid_ppo_runner_cfg()
+  """Vision runner carrying the same sigma floor as the state task.
+
+  Without it sigma collapsed to 0.026 and the policy never discovered the
+  descent to the block's side, even once that descent was reachable.
+  """
+  cfg = yam_lift_cube_vision_ppo_runner_cfg()
   cfg.experiment_name = "yam_push_t_reachable"
-  cfg.max_iterations = 2_500
+  cfg.max_iterations = 5_000
+  cfg.actor.distribution_cfg = {
+    "class_name": "GaussianDistribution",
+    "init_std": 1.0,
+    "std_type": "scalar",
+    "std_range": (0.2, 1.0),
+  }
   return cfg
 
 

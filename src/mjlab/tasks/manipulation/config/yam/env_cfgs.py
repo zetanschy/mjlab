@@ -636,27 +636,50 @@ def yam_push_t_replica_env_cfg(
 
 
 def yam_push_t_reachable_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """Run 7's hybrid, changing exactly one thing: the success predicate.
+  """Camera twin of the working state task. Same MDP, RGB instead of state.
 
-  Run 7 is the only configuration that has ever learned to push (0.020 m final
-  position error, 52% within 2 cm). Its reward already contains an ungated
-  rotation term at parity with position, and rotation still never moved. The
-  one component of that reward which has never once fired is the success
-  bonus: coverage >= 0.90 requires |dyaw| <= 4.6 deg AND |d| <= 2.9 mm jointly,
-  and it logged 0.0000 across roughly 590M steps. So the largest term in the
-  objective -- 3.0, against a shaped ceiling of about 0.74 -- has contributed
-  no gradient at all.
+  Built from yam_push_t_reachable_state_env_cfg so it inherits the two fixes
+  that made the task solvable at all -- the 0.8 rad uniform action scale that
+  puts the block's side within reach, and the reachable success predicate.
+  Built the other way round it would silently keep the stock scales, under
+  which side contact is impossible and every run fails identically.
 
-  Swapping it for a reachable 2 cm / 15 deg predicate turns that dead cliff
-  into a live one, and the cliff is the only part of the objective that pays
-  discontinuously for closing the last 60 deg of yaw. Everything else is
-  byte-identical to run 7.
+  The only difference from the state task is the observation: the actor loses
+  ee_to_t and t_to_goal and gets a 32x32 RGB wrist frame instead, keeping the
+  goal pose as state because the footprint is 1 mm tall. The critic keeps full
+  state. With a 96.6% state policy as the control, this is a clean test of
+  whether that camera can resolve the T's yaw -- the last untested question.
   """
-  cfg = yam_push_t_hybrid_env_cfg(play=play)
-  cfg.rewards["maniskill"].params["success_mode"] = "pose"
-  cfg.rewards["maniskill"].params["pos_tol"] = 0.02
-  cfg.rewards["maniskill"].params["yaw_tol_deg"] = 15.0
-  cfg.metrics = make_push_t_metrics()
+  cfg = yam_push_t_reachable_state_env_cfg(play=play)
+
+  cam_cfg = CameraSensorCfg(
+    name="camera_d405",
+    camera_name="robot/camera_d405",
+    height=32,
+    width=32,
+    data_types=("rgb",),
+    enabled_geom_groups=(0, 3),
+    use_shadows=False,
+    use_textures=True,
+  )
+  cfg.scene.sensors = (cfg.scene.sensors or ()) + (cam_cfg,)
+  cfg.observations["camera"] = ObservationGroupCfg(
+    terms={
+      "camera_d405_rgb": ObservationTermCfg(
+        func=manipulation_mdp.camera_rgb, params={"sensor_name": "camera_d405"}
+      )
+    },
+    enable_corruption=False,
+    concatenate_terms=True,
+  )
+
+  actor_obs = cfg.observations["actor"]
+  actor_obs.terms.pop("ee_to_t", None)
+  actor_obs.terms.pop("t_to_goal", None)
+  actor_obs.terms["goal_pose"] = ObservationTermCfg(
+    func=manipulation_mdp.goal_pose_in_base,
+    params={"goal_name": "t_goal"},
+  )
   return cfg
 
 
