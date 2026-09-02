@@ -5,6 +5,8 @@ from .env_cfgs import (
   yam_lift_cube_env_cfg,
   yam_lift_cube_vision_env_cfg,
   yam_multi_cube_seg_env_cfg,
+  yam_push_t_d435_env_cfg,
+  yam_push_t_d435_push_env_cfg,
   yam_push_t_env_cfg,
   yam_push_t_hybrid_env_cfg,
   yam_push_t_maniskill_env_cfg,
@@ -19,6 +21,8 @@ from .rl_cfg import (
   yam_lift_cube_ppo_runner_cfg,
   yam_lift_cube_vision_ppo_runner_cfg,
   yam_multi_cube_seg_ppo_runner_cfg,
+  yam_push_t_d435_ppo_runner_cfg,
+  yam_push_t_d435_push_ppo_runner_cfg,
   yam_push_t_hybrid_ppo_runner_cfg,
   yam_push_t_maniskill_ppo_runner_cfg,
   yam_push_t_ppo_runner_cfg,
@@ -158,5 +162,21 @@ register_mjlab_task(
   env_cfg=yam_push_t_precise_random_goal_env_cfg(),
   play_env_cfg=yam_push_t_precise_random_goal_env_cfg(play=True),
   rl_cfg=yam_push_t_precise_random_goal_ppo_runner_cfg(),
+  runner_cls=ManipulationOnPolicyRunner,
+)
+
+register_mjlab_task(
+  task_id="Mjlab-Push-T-Yam-D435",
+  env_cfg=yam_push_t_d435_env_cfg(),
+  play_env_cfg=yam_push_t_d435_env_cfg(play=True),
+  rl_cfg=yam_push_t_d435_ppo_runner_cfg(),
+  runner_cls=ManipulationOnPolicyRunner,
+)
+
+register_mjlab_task(
+  task_id="Mjlab-Push-T-Yam-D435-Push",
+  env_cfg=yam_push_t_d435_push_env_cfg(),
+  play_env_cfg=yam_push_t_d435_push_env_cfg(play=True),
+  rl_cfg=yam_push_t_d435_push_ppo_runner_cfg(),
   runner_cls=ManipulationOnPolicyRunner,
 )

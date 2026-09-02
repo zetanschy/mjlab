@@ -458,6 +458,7 @@ def maniskill_push_t_reward(
   success_mode: str = "coverage",
   pos_tol: float = 0.02,
   yaw_tol_deg: float = 15.0,
+  table_height: float = 0.0,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
   """ManiSkill's PushT-v1 dense reward, reproduced as a single term.
@@ -499,7 +500,12 @@ def maniskill_push_t_reward(
     # The pose predicate is reachable, and the flatness conjuncts stop it being
     # satisfied by lifting -- a cheaper skill than rotating.
     solved = success_pose(
-      env, object_name, goal_name, pos_tol=pos_tol, yaw_tol_deg=yaw_tol_deg
+      env,
+      object_name,
+      goal_name,
+      pos_tol=pos_tol,
+      yaw_tol_deg=yaw_tol_deg,
+      table_height=table_height,
     ).bool()
   else:
     solved = object_goal_coverage(env, object_name, goal_name) >= success_threshold
@@ -576,3 +582,62 @@ def push_precision_bonus(
   fine_pos = torch.square(1.0 - torch.tanh(pos_scale * dist)) / 2.0
   fine_yaw = torch.square(1.0 - torch.tanh(yaw_scale * yaw_err)) / 2.0
   return 4.0 * fine_pos * fine_yaw
+
+
+def object_lift_penalty(
+  env: ManagerBasedRlEnv,
+  object_name: str,
+  height_tol: float = 0.005,
+  height_ref: float = 0.02,
+) -> torch.Tensor:
+  """Penalize the block leaving the table, scaled so it actually bites.
+
+  ``object_displacement_penalty`` cannot do this job. It returns the SQUARED
+  height error in metres, so a 20 mm level carry evaluates to 4e-4 and costs
+  0.0008 at the base weight of -2.0 -- roughly 2500x too small to offset a task
+  reward of up to 5.0. Its tilt term reaches 2.0 and does bite, which is why it
+  suppresses a block being tipped over but not one being carried flat. A policy
+  is then free to scoop the block up and set it down, and one did: the D435
+  policy holds the block off the table for 98.9% of the episode, averaging a full
+  block height up, and reaches 2.52 mm / 1.22 deg by placing it rather than
+  pushing it.
+
+  This form is a linear hinge above ``height_tol``, normalised by ``height_ref``,
+  so the number is interpretable: at the defaults a 20 mm lift returns 0.75 and
+  costs 1.50 at weight -2.0, which is the same order as the precision the lifting
+  buys. Contact noise below 5 mm is free.
+  """
+  obj: Entity = env.scene[object_name]
+  height = obj.data.root_link_pos_w[:, 2] - env.scene.env_origins[:, 2]
+  excess = (height - height_tol).clamp_min(0.0) / height_ref
+  up_z = _block_up_z(obj)
+  return excess + (1.0 - up_z)
+
+
+def _block_up_z(obj: Entity) -> torch.Tensor:
+  """Third column of the object's rotation matrix: its own +z, in world."""
+  quat = obj.data.root_link_quat_w
+  x, y = quat[:, 1], quat[:, 2]
+  return 1.0 - 2.0 * (x * x + y * y)
+
+
+def gripper_open_penalty(
+  env: ManagerBasedRlEnv,
+  closed_tol: float = 0.005,
+  travel_ref: float = 0.0375,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize holding the gripper open, normalised by its travel.
+
+  Pushing is meant to be done with the gripper shut. Left free, the policy holds
+  it open at 22 mm of its 37.5 mm travel and uses the two fingers as a fork,
+  where a pushing policy on the same arm keeps it at 3.8 mm.
+
+  Note the finger's default is 18.8 mm -- half open -- so zero action already
+  incurs a penalty here, and the policy has to actively command the gripper shut.
+  Its action scale of 0.02 against a range of [-0.002, 0.0375] makes fully closed
+  reachable in one step, so this is a preference, not an unreachable demand.
+  """
+  robot: Entity = env.scene[asset_cfg.name]
+  opening = robot.data.joint_pos[:, asset_cfg.joint_ids]
+  return ((opening - closed_tol).clamp_min(0.0) / travel_ref).sum(dim=-1)

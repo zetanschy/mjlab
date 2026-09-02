@@ -317,38 +317,44 @@ def make_push_t_metrics() -> dict[str, MetricsTermCfg]:
   gate for a Push-T run should read these, never Episode_Reward/*, which can
   move for arithmetic reasons that have nothing to do with skill.
   """
-  names = {"object_name": OBJECT_NAME, "goal_name": GOAL_NAME}
+
+  # A fresh dict per term: these params get specialised per task (a tabletop
+  # variant sets table_height on just the two terms that accept it), and a
+  # shared dict would leak that keyword into all nine.
+  def names() -> dict[str, str]:
+    return {"object_name": OBJECT_NAME, "goal_name": GOAL_NAME}
+
   return {
     # reduce="last": terminal pose is the question; averaging over the episode
     # buries the ending in the approach.
     "yaw_err_deg": MetricsTermCfg(
-      func=manipulation_mdp.yaw_err_deg, params=names, reduce="last"
+      func=manipulation_mdp.yaw_err_deg, params=names(), reduce="last"
     ),
     "pos_err_m": MetricsTermCfg(
-      func=manipulation_mdp.pos_err_m, params=names, reduce="last"
+      func=manipulation_mdp.pos_err_m, params=names(), reduce="last"
     ),
     "coverage": MetricsTermCfg(
-      func=manipulation_mdp.coverage, params=names, reduce="last"
+      func=manipulation_mdp.coverage, params=names(), reduce="last"
     ),
     "success_pose": MetricsTermCfg(
-      func=manipulation_mdp.success_pose, params=names, reduce="last"
+      func=manipulation_mdp.success_pose, params=names(), reduce="last"
     ),
     "success_cov90": MetricsTermCfg(
-      func=manipulation_mdp.success_coverage, params=names, reduce="last"
+      func=manipulation_mdp.success_coverage, params=names(), reduce="last"
     ),
     "block_travel_m": MetricsTermCfg(
-      func=manipulation_mdp.block_travel_m, params=names, reduce="last"
+      func=manipulation_mdp.block_travel_m, params=names(), reduce="last"
     ),
     # Compare against UNIFORM_YAW_NULL = 0.1875. Mean over the episode is right
     # here: it is a distributional check, not a terminal one.
     "rot_component": MetricsTermCfg(
-      func=manipulation_mdp.rot_component, params=names, reduce="mean"
+      func=manipulation_mdp.rot_component, params=names(), reduce="mean"
     ),
     # "max": any lift at all matters, an episode mean would hide a brief one.
     "block_height_mm": MetricsTermCfg(
-      func=manipulation_mdp.block_height_mm, params=names, reduce="max"
+      func=manipulation_mdp.block_height_mm, params=names(), reduce="max"
     ),
     "block_tilt_dot": MetricsTermCfg(
-      func=manipulation_mdp.block_tilt_dot, params=names, reduce="mean"
+      func=manipulation_mdp.block_tilt_dot, params=names(), reduce="mean"
     ),
   }

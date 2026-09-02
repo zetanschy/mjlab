@@ -67,6 +67,7 @@ def success_pose(
   yaw_tol_deg: float = 15.0,
   height_tol: float = 0.005,
   min_up_z: float = 0.99,
+  table_height: float = 0.0,
 ) -> torch.Tensor:
   """Solved: within tolerance in position and yaw, and still flat on the table.
 
@@ -81,7 +82,10 @@ def success_pose(
   within_pos = pos_err_sq <= pos_tol**2
   within_yaw = yaw_err <= (yaw_tol_deg / _RAD2DEG)
 
-  height = obj.data.root_link_pos_w[:, 2] - env.scene.env_origins[:, 2]
+  # table_height is the working surface above the environment origin. It is 0 for
+  # a robot working off the ground plane and 0.75 for one working at a table; the
+  # flatness test is meaningless without it.
+  height = obj.data.root_link_pos_w[:, 2] - env.scene.env_origins[:, 2] - table_height
   flat_z = height.abs() <= height_tol
   up_z = _block_up_z(obj)
   upright = up_z >= min_up_z
@@ -114,11 +118,14 @@ def block_travel_m(
 
 
 def block_height_mm(
-  env: ManagerBasedRlEnv, object_name: str, goal_name: str
+  env: ManagerBasedRlEnv,
+  object_name: str,
+  goal_name: str,
+  table_height: float = 0.0,
 ) -> torch.Tensor:
-  """Block height above the table, in mm. Should stay near 0 for pushing."""
+  """Block height above the working surface, in mm. Near 0 for pushing."""
   obj: Entity = env.scene[object_name]
-  height = obj.data.root_link_pos_w[:, 2] - env.scene.env_origins[:, 2]
+  height = obj.data.root_link_pos_w[:, 2] - env.scene.env_origins[:, 2] - table_height
   return height * 1000.0
 
 

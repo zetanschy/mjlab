@@ -1,4 +1,5 @@
 import colorsys
+import dataclasses
 from typing import Any, Literal
 
 import mujoco
@@ -7,6 +8,7 @@ from mjlab.asset_zoo.robots import (
   YAM_ACTION_SCALE,
   get_yam_robot_cfg,
 )
+from mjlab.asset_zoo.robots.i2rt_yam.d435_mount import get_yam_d435_robot_cfg
 from mjlab.entity import EntityCfg
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp import dr
@@ -632,6 +634,10 @@ def yam_push_t_replica_env_cfg(
   # iteration 600. Pushing was a solved skill and 200 steps was not enough
   # exploration per episode to rediscover it.
   cfg.episode_length_s = episode_length_s
+  if play:
+    # Without this the viewer resets every 20 s; `play` was threaded through
+    # the signature but never applied here.
+    cfg.episode_length_s = int(1e9)
   return cfg
 
 
@@ -822,4 +828,109 @@ def yam_push_t_precise_random_goal_env_cfg(
     "y": (-0.10, 0.10),
     "yaw": (-3.14, 3.14),
   }
+  return cfg
+
+
+def yam_push_t_d435_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Randomized-goal Push-T seen through a RealSense D435 on its printed mount.
+
+  Same task and reward as the randomized-goal variant verified at 99.0% (3.7 mm,
+  2.2 deg). The only change is the eye: the stock D405 is removed and a D435 is
+  added on the camera_support bracket, at the poses the physical arm's own
+  description specifies (see asset_zoo/robots/i2rt_yam/d435_mount.py).
+
+  The camera carries the real colour-stream intrinsics (69.4 x 42.5 deg, aspect
+  1.78), so the policy image keeps that aspect rather than being squared off: a
+  square render against 1.78 intrinsics distorts the picture and throws away a
+  third of the camera's real width.
+
+  42x24 rather than 56x32, though. Both obs groups carry the image, so at 4096
+  envs the PPO rollout buffer is 4.25 GB at 56x32 against 2.44 GB at the old
+  32x32 -- enough, stacked on the camera meshes, to run a 12 GB card out of
+  memory. 42x24 holds the aspect at 2.39 GB, essentially the old footprint.
+
+  Aim, measured and worth knowing before a long run: at the home pose the optical
+  axis meets the table at x = 0.206 while this task's workspace runs x = 0.28 to
+  0.42, so the block is in frame but the goal is not. The camera is on the wrist,
+  so the workspace enters view as the arm moves, and goal_pose is supplied as
+  state regardless.
+  """
+  cfg = yam_push_t_precise_random_goal_env_cfg(play=play)
+
+  cfg.scene.entities = dict(cfg.scene.entities)
+  cfg.scene.entities["robot"] = get_yam_d435_robot_cfg()
+
+  # Workspace moved 10 cm closer so it falls inside what this camera actually
+  # sees. At the home pose the D435 covers the table over x = 0.14 to 0.32 m; the
+  # inherited layout put the goal at 0.38 to 0.42, entirely outside it. Measured
+  # at the policy's render size, the goal was 0 px against the D405's 27, and
+  # coverage >= 0.90 sat at 18.7% against the D405's 62.2% -- the policy can
+  # place the block coarsely from goal_pose as state, but cannot close the last
+  # millimetres against a target it never sees. Not a resolution problem: the
+  # D435 puts 50 px on the block to the D405's 17, at 9.2 mm per pixel to 10.7.
+  # After the shift the goal renders at 62 px. The push still runs away from the
+  # base; the arm does the same thing 10 cm closer in.
+  cfg.scene.entities["t_object"] = dataclasses.replace(
+    cfg.scene.entities["t_object"],
+    init_state=EntityCfg.InitialStateCfg(pos=(0.18, 0.0, 0.0)),
+  )
+  cfg.scene.entities["t_goal"] = dataclasses.replace(
+    cfg.scene.entities["t_goal"],
+    init_state=EntityCfg.InitialStateCfg(pos=(0.28, 0.0, 0.0)),
+  )
+
+  # Retarget the camera sensor from the D405, which no longer exists.
+  sensors = []
+  for s in cfg.scene.sensors or ():
+    if isinstance(s, CameraSensorCfg):
+      s = dataclasses.replace(
+        s,
+        name="camera_d435",
+        camera_name="robot/camera_d435",
+        width=42,
+        height=24,
+      )
+    sensors.append(s)
+  cfg.scene.sensors = tuple(sensors)
+  cam_group = cfg.observations["camera"]
+  cam_group.terms = {
+    "camera_d435_rgb": ObservationTermCfg(
+      func=manipulation_mdp.camera_rgb, params={"sensor_name": "camera_d435"}
+    )
+  }
+  return cfg
+
+
+def yam_push_t_d435_push_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """D435 Push-T with the gripper penalized for being open, so it pushes.
+
+  The unconstrained D435 task reaches 2.52 mm / 1.22 deg, better than any pushing
+  policy here, by holding the gripper open at 22 mm of its 37.5 mm travel and
+  working the block with the two fingers as a fork -- a pushing policy on the same
+  arm keeps the gripper at 3.8 mm. It is not cheating the objective: success is
+  evaluated at the end of the episode and its final pose is flat and correct. It
+  is simply a stronger solution to the reward as written.
+
+  Penalizing the gripper opening removes the mechanism directly, and removes the
+  scoop with it, since cradling the block needs the fingers apart.
+
+  Two things worth knowing. The finger's default is half open, so this term is
+  non-zero at zero action and the policy must actively close the gripper. And this
+  replaces the lift penalty rather than joining it, so a block carried by some
+  other means is no longer penalized -- watch Episode_Metrics/block_height_mm.
+
+  Expect worse absolute precision than the unconstrained task: placing a held
+  object beats nudging a pushed one. The point is that it stays a pushing problem,
+  which is what has a chance of transferring.
+  """
+  cfg = yam_push_t_d435_env_cfg(play=play)
+  cfg.rewards["gripper_open"] = RewardTermCfg(
+    func=manipulation_mdp.gripper_open_penalty,
+    weight=-2.0,
+    params={
+      "closed_tol": 0.005,
+      "travel_ref": 0.0375,
+      "asset_cfg": SceneEntityCfg("robot", joint_names=("left_finger",)),
+    },
+  )
   return cfg
