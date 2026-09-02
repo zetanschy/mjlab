@@ -5,6 +5,15 @@ Changelog
 Upcoming version (not yet released)
 -----------------------------------
 
+Added
+^^^^^
+
+- Push-T tasks for the Astribot S1 humanoid (``Mjlab-Push-T-S1``) and for the YAM arm
+  with a RealSense D435 on a printed mount (``Mjlab-Push-T-Yam-D435`` and
+  ``-D435-Push``). The S1 task drives the right arm from the robot's own head camera
+  and reuses the astribot tabletop scene as shipped, adopting its actuators through
+  ``XmlActuatorCfg`` rather than restating gains.
+
 Changed
 ^^^^^^^
 
@@ -20,6 +29,10 @@ Fixed
 - ``distribution="gaussian"`` domain randomization now draws an independent value per
   environment. ``sample_gaussian`` ignored its ``size`` argument when ``mean``/``std``
   were tensors, so every environment received the same sample :issue:`1168`.
+- ``make_push_t_metrics`` gave all nine metric terms the same ``params`` dict, so
+  specialising one term's parameters silently changed the other eight.
+- ``Mjlab-Push-T-Yam-Replica`` and ``-Replica-Gravcomp`` accepted ``play`` but never
+  applied it, so ``play`` reset the viewer every 20 seconds.
 
 Version 1.6.0 (August 8, 2026)
 ------------------------------
