@@ -149,6 +149,26 @@ def get_spec() -> mujoco.MjSpec:
     key = f"{body}_{kind}"
     counts[key] = counts.get(key, 0) + 1
     geom.name = f"{key}{counts[key]}"
+    if not visual:
+      # NO SELF-COLLISION. contype 1 / conaffinity 0 means these geoms are collided
+      # AGAINST by the world and the block -- whose geoms carry conaffinity 1 -- but
+      # never against each other, because a pair needs one side's contype to meet the
+      # other's conaffinity and arm-versus-arm has neither.
+      #
+      # A URDF gives every link a collision mesh that is the convex hull of the whole
+      # part, and adjacent links overlap heavily by construction: measured here, the
+      # base's hulls sit 22 to 28 mm INSIDE the shoulder's, permanently. MuJoCo then
+      # spends every step resolving a penetration that cannot be escaped, and the
+      # impulses go straight into the joint between them -- the Rotation joint hit
+      # +/-27 rad/s under a ZERO action command, walked 0.85 rad off its target, and
+      # dragged the whole arm somewhere unrelated to the task. From outside it looks
+      # like an arm twitching in the wrong place, which is exactly what it was.
+      #
+      # The SO-101 MJCF avoids this by giving its links small hand-fitted collision
+      # BOXES instead of hulls. That is the better model and a bigger change; this is
+      # the one line that makes the imported URDF behave.
+      geom.contype = 1
+      geom.conaffinity = 0
 
   gripper = next(b for b in spec.bodies if b.name == "gripper")
   gripper.add_site(name="grasp_site", pos=GRASP_SITE_POS, group=_VISUAL_GROUP)
