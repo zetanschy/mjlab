@@ -101,3 +101,16 @@ def so101_push_t_push_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   cfg = so101_push_t_camera_ppo_runner_cfg()
   cfg.experiment_name = "so101_push_t_push"
   return cfg
+
+
+def so101_push_t_visual_goal_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """Identical optimizer to the push task, so the comparison stays one-variable.
+
+  Nothing here is retuned for the harder observation on purpose: the only difference
+  between this run and the 89.6% one is that the actor's 22-dim state lost its last
+  four numbers, so a gap in the result is attributable to the goal's source rather
+  than to the optimizer.
+  """
+  cfg = so101_push_t_push_ppo_runner_cfg()
+  cfg.experiment_name = "so101_push_t_visual_goal"
+  return cfg

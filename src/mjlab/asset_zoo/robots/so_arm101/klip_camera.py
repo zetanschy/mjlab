@@ -87,7 +87,7 @@ KWC500_PRINCIPAL_PIXEL = (
   -(_CALIB_CY - _CALIB_H / 2) * KWC500_RESOLUTION[1] / _CALIB_H,
 )
 
-_MOUNT_MASS = 0.018   # printed PLA bracket
+_MOUNT_MASS = 0.018  # printed PLA bracket
 _VISUAL_GROUP = 2
 
 

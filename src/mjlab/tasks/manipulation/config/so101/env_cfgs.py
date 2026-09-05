@@ -57,11 +57,17 @@ from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import CameraSensorCfg, ContactSensorCfg
 from mjlab.tasks.manipulation import mdp as manipulation_mdp
-from mjlab.tasks.manipulation.push_t_env_cfg import make_push_t_env_cfg, make_push_t_metrics
-from mjlab.tasks.manipulation.push_t_scene import get_t_footprint_spec, get_t_object_spec
+from mjlab.tasks.manipulation.push_t_env_cfg import (
+  make_push_t_env_cfg,
+  make_push_t_metrics,
+)
+from mjlab.tasks.manipulation.push_t_scene import (
+  get_t_footprint_spec,
+  get_t_object_spec,
+)
+from mjlab.tasks.velocity import mdp as velocity_mdp
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.utils import spec_config as spec_cfg
-from mjlab.tasks.velocity import mdp as velocity_mdp
 
 # Measured on this arm, not inherited, and moved IN once the fingertip envelope was
 # measured rather than the gripper body's.
@@ -127,6 +133,7 @@ def _black_table_cfg() -> TerrainEntityCfg:
       ),
     ),
   )
+
 
 # The wrist body, for the ground-contact termination and the viewer.
 EE_BODY = "gripper"
@@ -204,7 +211,10 @@ def so101_push_t_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     "joint_vel_hinge": RewardTermCfg(
       func=manipulation_mdp.joint_velocity_hinge_penalty,
       weight=-0.01,
-      params={"max_vel": 0.5, "asset_cfg": SceneEntityCfg("robot", joint_names=(".*",))},
+      params={
+        "max_vel": 0.5,
+        "asset_cfg": SceneEntityCfg("robot", joint_names=(".*",)),
+      },
     ),
   }
   cfg.metrics = make_push_t_metrics()
@@ -213,10 +223,14 @@ def so101_push_t_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.observations["actor"].terms["ee_to_t"].params["asset_cfg"].site_names = GRASP_SITE
 
   cfg.events["reset_t_object"].params["pose_range"] = {
-    "x": SPAWN_X_RANGE, "y": SPAWN_Y_RANGE, "yaw": (-3.14, 3.14),
+    "x": SPAWN_X_RANGE,
+    "y": SPAWN_Y_RANGE,
+    "yaw": (-3.14, 3.14),
   }
   cfg.events["reset_t_goal"].params["pose_range"] = {
-    "x": GOAL_X_RANGE, "y": GOAL_Y_RANGE, "yaw": (-3.14, 3.14),
+    "x": GOAL_X_RANGE,
+    "y": GOAL_Y_RANGE,
+    "yaw": (-3.14, 3.14),
   }
   cfg.events["fingertip_friction_slide"].params["asset_cfg"].geom_names = (
     SO101_FINGERTIP_GEOMS,
@@ -246,8 +260,13 @@ def so101_push_t_camera_env_cfg(
   """Push-T through the KWC-500 on the wrist.
 
   The actor loses the block's pose and reads it off the image; it keeps goal_pose as
-  state, because the footprint is 1 mm tall and lives in geom group 2, which the camera
-  does not render. The critic keeps full state.
+  state. NOT because the footprint is invisible -- mjlab's own docstrings still say
+  the camera cannot see it, which was true before get_t_footprint_spec started
+  emitting a group-3 `_cam` copy of every goal geom, and is false now: segmentation
+  puts the footprint at 26.6 px of the average frame. It is kept because a precise
+  state vector is the easier signal, and measurably the one the policy uses -- see
+  so101_push_t_visual_goal_env_cfg, which removes it to ask the question properly.
+  The critic keeps full state.
 
   64x48, the render size agent_101's Isaac task uses, and 4:3 because that is the
   aspect the intrinsics were calibrated at -- a square render against a 4:3 lens throws
@@ -305,4 +324,49 @@ def so101_push_t_push_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "asset_cfg": SceneEntityCfg("robot", joint_names=("Jaw",)),
     },
   )
+  return cfg
+
+
+def so101_push_t_visual_goal_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """The push task with goal_pose removed: the goal has to be read off the image.
+
+  WHY THIS EXISTS. The trained push policy does not use the footprint it can see. The
+  camera renders it -- get_t_footprint_spec emits a group-3 `_cam` copy of every goal
+  geom precisely so it does, and segmentation puts it at 26.6 px of the average frame,
+  absent in only 2.6%... of the BLOCK's frames; the footprint itself is missing from
+  23.7% under random actions. But with a precise state vector always available the
+  policy had no reason to learn the harder route, and ablating the trained checkpoint
+  over 32 episodes shows it never did:
+
+      true goal      96.9% solved,   2 mm,  1.9 deg
+      zeroed          0.0% solved, 103 mm, 78.8 deg
+      displaced       0.0% solved,  89 mm, 65.9 deg   (+15 cm, +90 deg yaw)
+
+  Removing the term is the only way to find out whether the footprint is legible at
+  32x24, because while it is there the question cannot be asked.
+
+  THE GOAL RANGES ARE DELIBERATELY NOT WIDENED, which is where this departs from
+  mjlab's YAM visual-goal variant. That one widens y to +/-0.10 on the reasoning that
+  a goal read off the image must move or the policy memorises one location. The first
+  half applies here and is already satisfied -- yaw is drawn from the full +/-pi, so
+  no fixed guess survives, which is exactly why the ablation's yaw error is 78.8 deg
+  and not near zero. The second half inverts on this camera: past about 6 cm of
+  lateral offset the footprint leaves the KWC-500's frame entirely, so widening y
+  would not make the goal harder to memorise, it would make it impossible to see.
+  +/-0.05 is already at that edge.
+
+  THE LIKELY FAILURE, stated in advance so a flat run is diagnosed rather than
+  re-debugged: this policy is feedforward with history_length 0, so a frame where the
+  footprint is out of view carries no goal information at all, and roughly a quarter
+  of frames are that frame. If this does not learn, observation history on the camera
+  term is the first thing to try, not a reward change -- the reward is identical to
+  the task that already reached 89.6%, and the only variable is where the goal comes
+  from.
+
+  The critic is untouched and keeps t_to_goal, so the value function still sees the
+  goal in state. That asymmetry is the point of an asymmetric actor-critic: it costs
+  nothing at deployment, where only the actor runs.
+  """
+  cfg = so101_push_t_push_env_cfg(play=play)
+  cfg.observations["actor"].terms.pop("goal_pose", None)
   return cfg
