@@ -37,6 +37,7 @@ WHAT HAD TO CHANGE, and all of it is the arm being a third of the size:
 from __future__ import annotations
 
 import dataclasses
+import functools
 from typing import Literal
 
 from mjlab.asset_zoo.robots.so_arm101.klip_camera import (
@@ -57,6 +58,7 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import CameraSensorCfg, ContactSensorCfg
 from mjlab.tasks.manipulation import mdp as manipulation_mdp
 from mjlab.tasks.manipulation.push_t_env_cfg import make_push_t_env_cfg, make_push_t_metrics
+from mjlab.tasks.manipulation.push_t_scene import get_t_footprint_spec, get_t_object_spec
 from mjlab.tasks.velocity import mdp as velocity_mdp
 
 # Measured on this arm, not inherited, and moved IN once the fingertip envelope was
@@ -90,6 +92,18 @@ GOAL_Y_RANGE = (-0.05, 0.05)
 WORKSPACE_X = (0.02, 0.34)
 WORKSPACE_Y = (-0.25, 0.25)
 
+# The block is GREY, not mjlab's yellow: agent_101 prints this T in grey PLA and its
+# Isaac scene carries the same (0.55, 0.55, 0.57). The wrist camera is the reason it
+# matters -- a policy that learns "the yellow thing" off a 64x48 frame has learned
+# something the real camera will never show it.
+T_BLOCK_RGBA = (0.55, 0.55, 0.57, 1.0)
+
+# And the footprint red rather than mjlab's green. Both of these reach the policy: the
+# wrist camera renders geom groups (0, 3), which is where the block's collision boxes
+# and the footprint's camera geoms live, so their colours are literally part of the
+# observation.
+GOAL_RGBA = (0.45, 0.06, 0.06, 1.0)
+
 # The wrist body, for the ground-contact termination and the viewer.
 EE_BODY = "gripper"
 GRASP_SITE = ("grasp_site",)
@@ -101,10 +115,12 @@ def _so101_scene(cfg: ManagerBasedRlEnvCfg) -> None:
   cfg.scene.entities["robot"] = get_so101_robot_cfg(spec_fn=get_so101_klip_spec)
   cfg.scene.entities["t_object"] = dataclasses.replace(
     cfg.scene.entities["t_object"],
+    spec_fn=functools.partial(get_t_object_spec, rgba=T_BLOCK_RGBA),
     init_state=EntityCfg.InitialStateCfg(pos=(T_SPAWN_X, 0.0, 0.0)),
   )
   cfg.scene.entities["t_goal"] = dataclasses.replace(
     cfg.scene.entities["t_goal"],
+    spec_fn=functools.partial(get_t_footprint_spec, rgba=GOAL_RGBA),
     init_state=EntityCfg.InitialStateCfg(pos=(GOAL_X, 0.0, 0.0)),
   )
 
