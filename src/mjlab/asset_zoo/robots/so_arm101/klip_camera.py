@@ -58,8 +58,20 @@ KWC500_SENSORSIZE = (
   2 * KWC500_FOCAL[0] * math.tan(math.radians(KWC500_HFOV_DEG) / 2),
   2 * KWC500_FOCAL[1] * math.tan(math.radians(KWC500_VFOV_DEG) / 2),
 )
-# 4:3, as the real camera delivers and as the intrinsics were calibrated at.
-KWC500_RESOLUTION = (64, 48)
+# 4:3, as the real camera delivers and as the intrinsics were calibrated at. The
+# render size is NOT an intrinsic: focal_length and sensor_size are physical, so the
+# 66.6x52.5 deg cone is unchanged by it, and KWC500_PRINCIPAL_PIXEL below is derived
+# from it, so the off-centre principal point rescales itself. It is purely a cost
+# knob -- and the dominant one. At 64x48 the RTX 3060 OOMs above 2048 envs (the
+# rollout buffer alone is 24 x N x 9216 floats, and the actor and critic each run
+# their own CNN over it); 32x24 fits 4096 envs at 11209 MiB and 5.15 s/iter against
+# 2048 envs at 9.08 s/iter, i.e. 3.5x the throughput.
+#
+# The T stays legible at this size: over 3072 random-action frames it covers 86.8 px
+# on average (11.3% of the frame, median 75) and is absent in only 2.6%. Whether
+# 87 px resolves the T's yaw SIGN is the open question -- mjlab never settled it even
+# at the YAM's 42x24 -- and it is what the run using this size is testing.
+KWC500_RESOLUTION = (32, 24)
 
 # The principal point is NOT the image centre on this lens: the fit put it at
 # (332.3, 287.1) on a 640x480 frame, i.e. 12.3 px right and 47.1 px down of centre.
