@@ -79,11 +79,33 @@ _MOUNT_MASS = 0.018   # printed PLA bracket
 _VISUAL_GROUP = 2
 
 
-def _quat(rpy_deg: tuple[float, float, float]) -> tuple[float, float, float, float]:
-  """agent_101's Isaac euler triple (degrees, Rx@Ry@Rz) -> MuJoCo (w, x, y, z).
+# THE TWO EULER TRIPLES BELOW DO NOT SHARE A CONVENTION, and getting that wrong is how
+# the bracket ended up floating beside the arm instead of bolted to it.
+#
+# agent_101's objects.py carries two different euler-to-quaternion helpers and uses one
+# for each of these numbers:
+#
+#   the mount   _euler_quat(roll, pitch, yaw), which builds Rz(yaw) Ry(pitch) Rx(roll)
+#               -- scipy's EXTRINSIC "xyz"
+#   the camera  _quat_from_euler_deg(ex, ey, ez), which builds Rx Ry Rz
+#               -- scipy's INTRINSIC "XYZ"
+#
+# Checked against both helpers rather than assumed: with the mount's own angles the two
+# conventions differ by 180 degrees, and since the STL's origin sits at a corner of the
+# part rather than its centre, that rotation swings the whole bracket clear of the
+# wrist. It looks like a placement bug and is a convention one.
 
-  The same composition objects.py uses, so the numbers mean here what they mean there.
-  """
+
+def _quat_extrinsic(rpy_deg) -> tuple[float, float, float, float]:
+  """Mount convention: matches objects.py's _euler_quat exactly."""
+  from scipy.spatial.transform import Rotation
+
+  x, y, z, w = Rotation.from_euler("xyz", rpy_deg, degrees=True).as_quat()
+  return (float(w), float(x), float(y), float(z))
+
+
+def _quat_intrinsic(rpy_deg) -> tuple[float, float, float, float]:
+  """Camera convention: matches objects.py's _quat_from_euler_deg exactly."""
   from scipy.spatial.transform import Rotation
 
   x, y, z, w = Rotation.from_euler("XYZ", rpy_deg, degrees=True).as_quat()
@@ -97,7 +119,7 @@ def get_so101_klip_spec() -> mujoco.MjSpec:
 
   spec.add_mesh(name="klip_support", file=str(_ASSETS / "klip_support.stl"))
   mount = gripper.add_body(
-    name="klip_support", pos=_MOUNT_POS, quat=_quat(_MOUNT_RPY_DEG)
+    name="klip_support", pos=_MOUNT_POS, quat=_quat_extrinsic(_MOUNT_RPY_DEG)
   )
   mount.add_geom(
     name="klip_support_visual",
@@ -116,7 +138,7 @@ def get_so101_klip_spec() -> mujoco.MjSpec:
   gripper.add_camera(
     name="camera_klip",
     pos=_CAM_POS,
-    quat=_quat(_CAM_RPY_DEG),
+    quat=_quat_intrinsic(_CAM_RPY_DEG),
     focal_length=KWC500_FOCAL,
     sensor_size=KWC500_SENSORSIZE,
     principal_pixel=KWC500_PRINCIPAL_PIXEL,
