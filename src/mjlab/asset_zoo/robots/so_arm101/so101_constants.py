@@ -98,15 +98,16 @@ SO101_ROT = (math.cos(_H), 0.0, 0.0, math.sin(_H))
 # step in every environment at 405 N, and the episode reset before the policy could
 # move anything. That is what "the arm is not moving" was.
 #
-# So this pose is chosen by running the collision detector: no geom of the arm may
-# come within 2 mm of the floor plane. It puts the fingertip site 80 mm up, which is
-# the height with the best joint-limit margin among the feasible ones.
+# So this pose is chosen by running the collision detector: no geom of the arm may come
+# within 2 mm of the floor plane. It puts the fingertip 40 mm above the table at world
+# (0.15, +0.14), which is 14 cm to the side of the block's spawn line -- clear of the
+# +/-6 cm spawn box, with 0.78 rad of joint-limit margin.
 SO101_HOME = {
-  "Rotation": -0.7169,
-  "Pitch": 0.1790,
-  "Elbow": 0.5321,
-  "Wrist_Pitch": 0.6378,
-  "Wrist_Roll": 0.3294,
+  "Rotation": -0.7477,
+  "Pitch": -0.2670,
+  "Elbow": 0.7866,
+  "Wrist_Pitch": 0.8439,
+  "Wrist_Roll": -0.1736,
   "Jaw": -0.1500,
 }
 

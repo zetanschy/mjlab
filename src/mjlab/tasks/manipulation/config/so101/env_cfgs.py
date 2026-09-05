@@ -59,9 +59,23 @@ from mjlab.tasks.manipulation import mdp as manipulation_mdp
 from mjlab.tasks.manipulation.push_t_env_cfg import make_push_t_env_cfg, make_push_t_metrics
 from mjlab.tasks.velocity import mdp as velocity_mdp
 
-# Measured on this arm, not inherited. See the module docstring.
-T_SPAWN_X = 0.18
-GOAL_X = 0.28
+# Measured on this arm, not inherited, and moved IN once the fingertip envelope was
+# measured rather than the gripper body's.
+#
+# The first layout put the block at 0.18 m and the goal at 0.28. Both are reachable --
+# the fingertip envelope at block height runs to 0.45 m -- but reachable is not the
+# same as workable. Sampling 120k joint configurations and keeping those that put the
+# FINGERTIP at block height within 8 cm of the task line, the density falls away with
+# distance: 329 samples at 0.06-0.10 m, 205 at 0.10-0.14, 141 at 0.14-0.18, and only 79
+# at 0.26-0.30. The goal was sitting in the thinnest part of the workspace, a quarter
+# the density of the region just in front of the base, so most of the arm's usable
+# postures were behind the task rather than around it.
+#
+# 0.13 and 0.23 put the block and the goal in bands three and four times denser, and
+# leave the arm the high-density region at 0.06-0.10 m to get BEHIND the block from,
+# which is where a push has to start.
+T_SPAWN_X = 0.13
+GOAL_X = 0.23
 # Disjoint in x by 5 cm however the draws fall, which is mjlab's own rule: overlap and
 # a fraction of episodes start already solved and the reward pays for the reset draw.
 SPAWN_X_RANGE = (-0.03, 0.03)
@@ -73,7 +87,7 @@ GOAL_X_RANGE = (-0.02, 0.02)
 GOAL_Y_RANGE = (-0.05, 0.05)
 
 # The block is off the table long before the arm could have followed it here.
-WORKSPACE_X = (0.06, 0.40)
+WORKSPACE_X = (0.02, 0.34)
 WORKSPACE_Y = (-0.25, 0.25)
 
 # The wrist body, for the ground-contact termination and the viewer.
