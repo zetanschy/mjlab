@@ -100,14 +100,24 @@ SO101_ROT = (math.cos(_H), 0.0, 0.0, math.sin(_H))
 #
 # So this pose is chosen by running the collision detector: no geom of the arm may come
 # within 2 mm of the floor plane. It puts the fingertip 40 mm above the table at world
-# (0.15, +0.14), which is 14 cm to the side of the block's spawn line -- clear of the
-# +/-6 cm spawn box, with 0.78 rad of joint-limit margin.
+# (0.13, +0.05) -- level with the block's spawn line and 5 cm to one side of it.
+#
+# 5 cm, not the 14 cm this was first set to. The lateral offset and the block's own
+# +/-6 cm spawn draw ADD: at 14 cm aside the fingertip started 190 mm from the block on
+# an ordinary reset and averaged 218 mm over a rollout, which is most of this arm's
+# working range spent travelling to the task instead of doing it. At 5 cm the typical
+# gap is 50 mm and the worst case 110 mm.
+#
+# Closer than this is possible and not worth it: the limit margin falls with the offset
+# (0.547 rad here, 0.663 at 11 cm) and it has to stay above the 0.5 action scale or the
+# policy's commands start being clipped by the joints. Overlap with a block spawned
+# toward this side is fine -- the fingertip sits 40 mm up and the block is 20 mm tall.
 SO101_HOME = {
-  "Rotation": -0.7477,
-  "Pitch": -0.2670,
-  "Elbow": 0.7866,
-  "Wrist_Pitch": 0.8439,
-  "Wrist_Roll": -0.1736,
+  "Rotation": -0.2585,
+  "Pitch": -0.5715,
+  "Elbow": 1.0236,
+  "Wrist_Pitch": 1.1098,
+  "Wrist_Roll": -0.1473,
   "Jaw": -0.1500,
 }
 
