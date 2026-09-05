@@ -27,8 +27,17 @@ from mjlab.actuator import BuiltinPositionActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
 SO101_ROOT: Path = MJLAB_SRC_PATH / "asset_zoo" / "robots" / "so_arm101"
-SO101_URDF: Path = SO101_ROOT / "xmls" / "so101_calib.urdf"
-assert SO101_URDF.exists(), f"URDF not found: {SO101_URDF}"
+# The MJCF, generated once from so101_calib.urdf (kept beside it) by compiling the
+# URDF and wrapping the worldbody's children in a body named "base".
+#
+# That wrapper is not cosmetic. MuJoCo's URDF importer turns the root link into
+# WORLDBODY, so the arm's links hang directly off the world and the entity has no root
+# body -- and mjlab then never runs the actuator group at all. Everything looked right
+# in that state: six actuators wired to the six joints with the correct gains, the
+# action term computing correct targets, and the arm not moving, because
+# BuiltinPositionActuator.compute() was called exactly zero times per step.
+SO101_XML: Path = SO101_ROOT / "xmls" / "so101_calib.xml"
+assert SO101_XML.exists(), f"MJCF not found: {SO101_XML}"
 
 # STS3215 servo, from the SO-101 MJCF's own default class.
 _JOINT_DAMPING = 2.0
@@ -62,24 +71,42 @@ SO101_YAW_DEG = 90.0
 _H = math.radians(SO101_YAW_DEG) / 2
 SO101_ROT = (math.cos(_H), 0.0, 0.0, math.sin(_H))
 
-# Home pose, solved in agent_101 with scipy against fk_gripper inside the URDF's real
-# joint limits: gripper 40 mm above the table, 16 cm to the side of where the block
-# spawns, 1.01 rad of margin to the nearest joint limit. Beside the block because a
-# home directly over it rests the jaws on the task object; clear of the limits so a
-# full action in any direction stays legal.
+# Home pose, solved against this model's own FK inside the URDF's real joint limits:
+# the FINGERTIP 35 mm above the table, 16 cm to the side of where the block spawns,
+# 1.15 rad of margin to the nearest joint limit.
+#
+# The fingertip, not the gripper body, and that distinction is the whole point. The
+# first version of this pose put the GRIPPER 40 mm up, which left the finger geoms at
+# 4.9 mm -- touching the table. The arm was then pinned by friction at its own home:
+# commanded +0.3 rad, Rotation and Elbow moved 0.0000 while Pitch tore free and ran
+# 2.0 rad to its limit, dragging the others with it. It reads exactly like a robot
+# that will not move, which is what it was.
+#
+# The constraint is CONTACT, evaluated by MuJoCo, not a height threshold on geom
+# origins. That distinction cost two wrong poses. A geom's origin says nothing about
+# where its surface is: with the fingertip site at 35 mm and the finger geom ORIGINS
+# reading 20.7 mm "above the table", MuJoCo reported those same geoms 35.7 mm BELOW
+# it -- the collision hulls extend about 55 mm past their own centres. The arm was
+# buried in the table at its home pose, the ee_ground_collision sensor fired on every
+# step in every environment at 405 N, and the episode reset before the policy could
+# move anything. That is what "the arm is not moving" was.
+#
+# So this pose is chosen by running the collision detector: no geom of the arm may
+# come within 2 mm of the floor plane. It puts the fingertip site 80 mm up, which is
+# the height with the best joint-limit margin among the feasible ones.
 SO101_HOME = {
-  "Rotation": -0.6992,
-  "Pitch": 0.7312,
-  "Elbow": 0.4016,
-  "Wrist_Pitch": -0.0414,
-  "Wrist_Roll": -0.0540,
+  "Rotation": -0.7169,
+  "Pitch": 0.1790,
+  "Elbow": 0.5321,
+  "Wrist_Pitch": 0.6378,
+  "Wrist_Roll": 0.3294,
   "Jaw": -0.1500,
 }
 
 
 def get_spec() -> mujoco.MjSpec:
   """The calibrated arm, with the servo model, groups, site and actuators added."""
-  spec = mujoco.MjSpec.from_file(str(SO101_URDF))
+  spec = mujoco.MjSpec.from_file(str(SO101_XML))
 
   # frictionloss only. Damping and armature are the actuator config's to set below --
   # mjlab's BuiltinPositionActuatorCfg overrides whatever the XML says for those two,
