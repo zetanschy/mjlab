@@ -176,12 +176,28 @@ def get_so101_robot_cfg(spec_fn=get_spec) -> EntityCfg:
   )
 
 
-# Uniform, and 0.3 rather than the 0.8 mjlab's YAM Push-T settles on. Measured on this
-# arm in agent_101: at 0.8 the gripper travels 46 mm per control step -- 1.4 m/s -- and
-# spends 30% of steps below the table surface; at 0.3 it is 20 mm, which is about the
-# width of the T's stem, so the arm can approach the block without stepping past it.
-# 0.8 is the right number for a YAM, which is a much bigger arm reaching much further.
-SO101_ACTION_SCALE: float = 0.3
+# Uniform, and chosen by mjlab's own test rather than by per-step travel, which is what
+# 0.3 was chosen by and which turned out to measure the wrong thing.
+#
+# With use_default_offset the policy can only ever reach home +/- scale on each joint,
+# so the scale IS the workspace. Sampling 40k points of that box and mapping the
+# FINGERTIP into world:
+#
+#   scale   fingertip y range      at block height   gets BEHIND the block
+#   0.3     +0.03 .. +0.26 m        12937/40000       674  (1.69%)
+#   0.5     -0.03 .. +0.31          10370             2218 (5.54%)
+#   0.8     -0.09 .. +0.39           6626             1172 (2.93%)
+#   1.2     -0.15 .. +0.44           4895              843 (2.11%)
+#
+# At 0.3 the reachable y range NEVER CROSSES ZERO. The block sits on y = 0, so the arm
+# could not touch it at all -- it jiggled in a small patch beside the task, which is
+# exactly what it looked like from outside.
+#
+# 0.5 is the peak. Beyond it the box gets coarser faster than it gets bigger and less
+# of it lands anywhere useful, which is the same shape mjlab found on the YAM: 0.8 gave
+# 2.12% there and 1.2 rad was worse at 1.64%. 5.54% is comfortably above the 2.12% that
+# trained to 99% success over there.
+SO101_ACTION_SCALE: float = 0.5
 
 
 # The geoms that touch the block when the arm pushes: the moving jaw and the fixed
