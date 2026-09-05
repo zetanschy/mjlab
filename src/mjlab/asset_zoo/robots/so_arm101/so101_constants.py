@@ -58,9 +58,16 @@ _COLLISION_GROUP = 3
 # the table while the fingers were at 4.9 mm -- a 25 mm error, larger than the block
 # is tall.
 #
-# This is the centroid of the three geoms that actually touch anything: the two on
-# the gripper body and the moving jaw's, expressed in the gripper frame.
-GRASP_SITE_POS = (0.0059, 0.0001, -0.0332)
+# The midpoint of the two FINGERTIPS, found by taking the 40 lowest mesh vertices of
+# the fixed finger and of the moving jaw at the home pose and averaging them.
+#
+# Not the centroid of the geoms' origins, which is what this was first: a collision
+# mesh's origin is near the middle of the part, and for this gripper that sat 70 mm
+# ABOVE the surfaces that actually touch anything. Asking the guidance term to bring
+# that point down to the block's 10 mm buried the real fingers 25 mm into the table.
+# Measured at the home pose the two tips are 7.0 and 10.2 mm above the surface while
+# the old site was at 80 mm.
+GRASP_SITE_POS = (-0.0074, 0.0, -0.1035)
 
 # The arm is yawed 90 degrees so its working direction is +x, which is the direction
 # mjlab's Push-T scene pushes in. Measured rather than assumed: at zero joints the
