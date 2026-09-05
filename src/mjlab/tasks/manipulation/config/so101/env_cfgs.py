@@ -59,6 +59,8 @@ from mjlab.sensor import CameraSensorCfg, ContactSensorCfg
 from mjlab.tasks.manipulation import mdp as manipulation_mdp
 from mjlab.tasks.manipulation.push_t_env_cfg import make_push_t_env_cfg, make_push_t_metrics
 from mjlab.tasks.manipulation.push_t_scene import get_t_footprint_spec, get_t_object_spec
+from mjlab.terrains import TerrainEntityCfg
+from mjlab.utils import spec_config as spec_cfg
 from mjlab.tasks.velocity import mdp as velocity_mdp
 
 # Measured on this arm, not inherited, and moved IN once the fingertip envelope was
@@ -104,6 +106,28 @@ T_BLOCK_RGBA = (0.55, 0.55, 0.57, 1.0)
 # observation.
 GOAL_RGBA = (0.45, 0.06, 0.06, 1.0)
 
+# And the table black, where mjlab's push-T uses white. agent_101's bench is a black mat
+# on a black table -- (0.03, 0.03, 0.03) is the value its Isaac scene uses -- and the
+# terrain geom is group 0, which the wrist camera renders, so this is the background of
+# every frame the policy ever sees.
+TABLE_RGBA = (0.03, 0.03, 0.03, 1.0)
+
+
+def _black_table_cfg() -> TerrainEntityCfg:
+  """mjlab's get_white_table_cfg, in this workspace's colour."""
+  return TerrainEntityCfg(
+    terrain_type="plane",
+    textures=(),
+    materials=(
+      spec_cfg.MaterialCfg(
+        name="table",
+        rgba=TABLE_RGBA,
+        reflectance=0.0,
+        geom_names_expr=("terrain$",),
+      ),
+    ),
+  )
+
 # The wrist body, for the ground-contact termination and the viewer.
 EE_BODY = "gripper"
 GRASP_SITE = ("grasp_site",)
@@ -111,6 +135,7 @@ GRASP_SITE = ("grasp_site",)
 
 def _so101_scene(cfg: ManagerBasedRlEnvCfg) -> None:
   """Swap the YAM out of the base scene and move the task in to reach."""
+  cfg.scene.terrain = _black_table_cfg()
   cfg.scene.entities = dict(cfg.scene.entities)
   cfg.scene.entities["robot"] = get_so101_robot_cfg(spec_fn=get_so101_klip_spec)
   cfg.scene.entities["t_object"] = dataclasses.replace(

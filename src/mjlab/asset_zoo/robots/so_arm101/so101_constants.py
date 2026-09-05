@@ -51,6 +51,19 @@ _ACTUATOR_FORCE = 1.5
 _VISUAL_GROUP = 2
 _COLLISION_GROUP = 3
 
+# The real SO-ARM101 in agent_101's workshop is printed in WHITE; the URDF ships the
+# printed parts in the yellow the CAD was authored in. Same value that repo's
+# set_robot_color paints its Isaac arm with, so the two simulators show one robot.
+#
+# Only the printed parts. The dark (0.1, 0.1, 0.1) geoms are the STS3215 servo bodies
+# and they really are that colour -- agent_101 repaints Looks/material_a_3d_printed and
+# leaves the servos alone for the same reason.
+_PRINTED_YELLOW = (1.0, 0.82, 0.12)
+_PRINTED_WHITE = (0.93, 0.93, 0.95, 1.0)
+# The servo bodies, explicitly black rather than the URDF's very dark grey.
+_SERVO_GREY = (0.1, 0.1, 0.1)
+_SERVO_BLACK = (0.05, 0.05, 0.05, 1.0)
+
 # The point the reward measures the "end effector" at, and it is MEASURED, not
 # estimated. push-T's ee_guidance term drives the policy toward a standoff point
 # beside the block, so a site in the wrong place aims the whole approach at the wrong
@@ -149,6 +162,17 @@ def get_spec() -> mujoco.MjSpec:
     key = f"{body}_{kind}"
     counts[key] = counts.get(key, 0) + 1
     geom.name = f"{key}{counts[key]}"
+
+    # Repaint the printed parts, VISUAL AND COLLISION alike. The collision geoms are
+    # the ones that matter to the policy: the wrist camera renders groups (0, 3), so
+    # what it sees of the arm is the group-3 collision meshes, not the group-2 visuals
+    # a person looks at. Painting only the visuals would leave a yellow arm in the
+    # observation and a white one on screen.
+    shade = tuple(round(float(v), 2) for v in geom.rgba[:3])
+    if shade == _PRINTED_YELLOW:
+      geom.rgba = _PRINTED_WHITE
+    elif shade == _SERVO_GREY:
+      geom.rgba = _SERVO_BLACK
     if not visual:
       # NO SELF-COLLISION. contype 1 / conaffinity 0 means these geoms are collided
       # AGAINST by the world and the block -- whose geoms carry conaffinity 1 -- but
