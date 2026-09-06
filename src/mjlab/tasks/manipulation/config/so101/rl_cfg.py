@@ -114,3 +114,21 @@ def so101_push_t_visual_goal_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   cfg = so101_push_t_push_ppo_runner_cfg()
   cfg.experiment_name = "so101_push_t_visual_goal"
   return cfg
+
+
+def so101_lift_cube_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """State lift task: no camera, so no CNN."""
+  cfg = so101_push_t_ppo_runner_cfg()
+  cfg.experiment_name = "so101_lift_cube"
+  return cfg
+
+
+def so101_lift_cube_vision_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """Vision lift task: the same spatial-softmax CNN the push chain uses.
+
+  Unchanged from the push task's optimizer, including the sigma floor, so that a
+  result here says something about lifting rather than about retuning.
+  """
+  cfg = so101_push_t_camera_ppo_runner_cfg()
+  cfg.experiment_name = "so101_lift_cube_vision"
+  return cfg
