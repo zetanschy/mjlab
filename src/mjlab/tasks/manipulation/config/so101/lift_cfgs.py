@@ -1,21 +1,36 @@
-"""Cube lifting on the SO-ARM101, from the wrist camera.
+"""Lifting the grey T on the SO-ARM101, from the wrist camera.
 
-mjlab's Mjlab-Lift-Cube-Yam-Rgb, transplanted onto an arm a third of the size. The
-reward, the command term and the curriculum are taken unchanged; what had to move is
-everything that encodes how far the YAM can reach and how wide it opens.
+mjlab's Mjlab-Lift-Cube-Yam-Rgb, transplanted onto an arm a third of the size and
+onto the object agent_101 actually owns. The reward, the command term and the
+curriculum are taken unchanged; what had to move is everything encoding how far the
+YAM reaches, how wide it opens, and what it is holding.
+
+THE OBJECT IS THE PUSH-T BLOCK, not a cube -- the same get_t_object_spec, the same
+grey, the same 105 g. This bench has one printed manipuland and a policy trained
+against a different one cannot be run on it. It also costs nothing on the vision
+side and gains a lot: the T subtends 86.8 px of the 32x24 frame against a 30 mm
+cube's 27.4, and is absent from 2.6% of random-action frames against 15.1%.
+
+WHAT IT COSTS is that a T is not a cube in the way that matters to a gripper. A cube
+presents the same 30 mm to the jaw from any yaw; the T presents 25 mm across its stem
+or crossbar and 100 mm along them, so with yaw drawn from the full +/-pi the policy
+has to bring Wrist_Roll into alignment before it can close on anything. That is a
+harder problem than the YAM's cube, and it is the thing to watch if this does not
+learn.
 
 WHAT THE CAMERA IS AND IS NOT FOR. In the vision variant the actor loses ee_to_cube
-and cube_to_goal and has to find the CUBE in the image. It keeps goal_position as
-state, and that is not the shortcut it was in Push-T: the push goal was a printed
-footprint, a physical thing the camera could see and the policy declined to use. The
-lift target is a virtual point in the air. No camera can see it, on this bench or any
-other, so state is the only place it can come from.
+and t_to_goal and has to find the T in the image. It keeps goal_position as state,
+and that is not the shortcut it was in Push-T: the push goal was a printed footprint,
+a physical thing the camera could see and the policy declined to use. The lift target
+is a virtual point in the air. No camera can see it, on this bench or any other, so
+state is the only place it can come from.
 
 MEASURED ON THIS ARM, because the YAM's numbers are wrong here by a factor of two:
 
   THE JAW. Tip separation runs 2.5 mm at the -10 degree limit to 137 mm at +100,
-  passing 33 mm at 12 degrees. So the jaw does not constrain the cube size at all;
-  the camera does, and CUBE_HALF below carries that measurement.
+  passing 33 mm at 12 degrees. The T's graspable features -- the stem across its
+  25 mm width, the crossbar across its 25 mm depth -- sit comfortably inside that,
+  needing about 0.15 rad of the 1.92 rad range.
 
   THE JAW'S ACTION SCALE. 0.5, the same as the arm joints, where Push-T throttled it
   to 0.05. That was right there and would be fatal here: Push-T wanted the jaw shut
@@ -36,18 +51,22 @@ MEASURED ON THIS ARM, because the YAM's numbers are wrong here by a factor of tw
   no use for holding a cube. Raising the target above 0.20 m costs the same way: the
   0.20-0.30 band drops to 18%.
 
-  THE TABLE. Black, as in Push-T and as on agent_101's bench, and that constrains the
-  cube's colour randomization: mjlab draws the YAM's cube from the full (0, 1) cube
-  against a white table, which here would regularly produce a black cube on a black
-  table. Drawn from (0.25, 0.85) instead, which stays clear of the table's 0.03 and
-  the arm's 0.93.
+  THE TABLE, and no colour randomization. Black table, grey T, white arm -- the same
+  scene Push-T uses, for the same reason: mjlab randomizes its YAM cube's colour over
+  the full (0, 1) range, and doing that here would train a policy on an object the
+  real camera will never show it. The T is printed in one grey and that is what it
+  stays.
+
+  THE MASS. 105 g, mjlab's own figure for this block, kept rather than reduced. A
+  solid PLA T of these dimensions is about 108 g and a sparse-infill print nearer 40,
+  so this is the heavy end of what the real object can be -- which is the safe
+  direction to be wrong in for grip force, if not for droop.
 """
 
 from __future__ import annotations
 
+import functools
 from typing import Literal
-
-import mujoco
 
 from mjlab.asset_zoo.robots.so_arm101.klip_camera import (
   KWC500_RESOLUTION,
@@ -60,83 +79,42 @@ from mjlab.asset_zoo.robots.so_arm101.so101_constants import (
 )
 from mjlab.entity import EntityCfg
 from mjlab.envs import ManagerBasedRlEnvCfg
-from mjlab.envs.mdp import dr
 from mjlab.envs.mdp.actions import JointPositionActionCfg
-from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import CameraSensorCfg, ContactSensorCfg
 from mjlab.tasks.manipulation import mdp as manipulation_mdp
 from mjlab.tasks.manipulation.lift_cube_env_cfg import make_lift_cube_env_cfg
 from mjlab.tasks.manipulation.mdp import LiftingCommandCfg
+from mjlab.tasks.manipulation.push_t_scene import get_t_object_spec
 
-from .env_cfgs import EE_BODY, GRASP_SITE, _black_table_cfg
+from .env_cfgs import EE_BODY, GRASP_SITE, T_BLOCK_RGBA, _black_table_cfg
 
-# 30 mm, and the size is a compromise between the jaw and the camera rather than a
-# round number. The jaw allows anything up to about 60 mm, so grasping does not
-# constrain it; the 32x24 frame does. Segmentation over 1024 random-action frames:
-#
-#     25 mm   17.3 px (2.2%)   median 12   absent 21.3% of frames
-#     30 mm   27.4 px (3.6%)   median 21   absent 15.1%
-#     35 mm   34.2 px (4.4%)   median 23   absent 13.6%
-#
-# 30 mm buys 58% more pixels than 25 for 0.19 rad of jaw against 0.15, and stops
-# short of 35, where the cube approaches the length of the fingers themselves and
-# the grasp gets marginal. 27 px is also, for scale, about what the Push-T footprint
-# subtends -- and that one was never learned, which is the risk this task carries.
-# The mitigation is not pixels: it is that the lift reward is dense in ee-to-cube
-# distance, so there is gradient toward the cube before it is resolvable.
-#
-# Mass is a printed PLA cube at the infill agent_101 prints at, not the YAM's 50 g --
-# these are 7.4 kg-cm servos.
-CUBE_HALF = 0.015
-CUBE_MASS = 0.02
-CUBE_RGBA = (0.55, 0.55, 0.57, 1.0)  # the grey the T is printed in, as a default
+OBJECT_NAME = "t_object"
 
-# Both boxes are the measured top-down-reachable regions, not the YAM's.
-SPAWN_X = (0.10, 0.20)
-SPAWN_Y = (-0.08, 0.08)
+# The same spawn band Push-T uses on this arm, which was chosen from the fingertip
+# reach density rather than from the gripper body's: 0.13 +/- 0.03, |y| < 0.06.
+SPAWN_X = (0.10, 0.16)
+SPAWN_Y = (-0.06, 0.06)
+
+# Lower than the cube version's 0.10-0.20 for two measured reasons: the 0.08-0.14
+# band has the better top-down density (48% against 41%), and the T is five times
+# the mass, so there is no reason to ask for the extra height.
 TARGET_X = (0.10, 0.22)
 TARGET_Y = (-0.08, 0.08)
-TARGET_Z = (0.10, 0.20)
-
-# Clear of the black table (0.03) and the white arm (0.93) at both ends.
-CUBE_COLOR_RANGE = (0.25, 0.85)
+TARGET_Z = (0.08, 0.16)
 
 
-def get_so101_cube_spec(
-  cube_size: float = CUBE_HALF,
-  mass: float = CUBE_MASS,
-  rgba: tuple[float, float, float, float] = CUBE_RGBA,
-) -> mujoco.MjSpec:
-  """A cube sized for this jaw. Group 3 so the wrist camera renders it.
-
-  mjlab's YAM cube leaves the geom on the default group 0, which the camera also
-  renders, so it is visible either way -- but group 3 is where this scene puts
-  everything the camera is meant to see, and matching it keeps one rule.
-  """
-  spec = mujoco.MjSpec()
-  body = spec.worldbody.add_body(name="cube")
-  body.add_freejoint(name="cube_joint")
-  body.add_geom(
-    name="cube_geom",
-    type=mujoco.mjtGeom.mjGEOM_BOX,
-    size=(cube_size,) * 3,
-    mass=mass,
-    rgba=rgba,
-    group=3,
-  )
-  return spec
-
-
-def so101_lift_cube_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """State-based cube lifting on the SO-ARM101."""
+def so101_lift_t_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """State-based lifting of the grey T on the SO-ARM101."""
   cfg = make_lift_cube_env_cfg()
 
   cfg.scene.terrain = _black_table_cfg()
   cfg.scene.entities = {
     "robot": get_so101_robot_cfg(spec_fn=get_so101_klip_spec),
-    "cube": EntityCfg(spec_fn=get_so101_cube_spec),
+    OBJECT_NAME: EntityCfg(
+      spec_fn=functools.partial(get_t_object_spec, rgba=T_BLOCK_RGBA)
+    ),
   }
 
   joint_pos_action = cfg.actions["joint_pos"]
@@ -154,10 +132,17 @@ def so101_lift_cube_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     x=TARGET_X, y=TARGET_Y, z=TARGET_Z
   )
 
-  cfg.observations["actor"].terms["ee_to_cube"].params[
-    "asset_cfg"
-  ].site_names = GRASP_SITE
+  # The base config names these terms and params after a cube because it is shared
+  # with the YAM task. The keys are left alone -- renaming them would reorder the
+  # observation for no gain -- but every object_name is retargeted onto the T.
+  actor = cfg.observations["actor"]
+  actor.terms["ee_to_cube"].params["asset_cfg"].site_names = GRASP_SITE
+  actor.terms["ee_to_cube"].params["object_name"] = OBJECT_NAME
+  actor.terms["cube_to_goal"].params["object_name"] = OBJECT_NAME
   cfg.rewards["lift"].params["asset_cfg"].site_names = GRASP_SITE
+  for term in ("lift", "lift_precise"):
+    cfg.rewards[term].params["object_name"] = OBJECT_NAME
+  lift.entity_name = OBJECT_NAME
 
   for term in (
     "fingertip_friction_slide",
@@ -183,17 +168,17 @@ def so101_lift_cube_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   return cfg
 
 
-def so101_lift_cube_vision_env_cfg(
+def so101_lift_t_vision_env_cfg(
   cam_type: Literal["rgb", "depth"] = "rgb", play: bool = False
 ) -> ManagerBasedRlEnvCfg:
   """Cube lifting through the KWC-500 on the wrist.
 
-  The actor loses the cube's pose and reads it off the image. It keeps
-  goal_position, which is a virtual point in the air and cannot be seen -- see the
-  module docstring for why that is a different situation from Push-T's footprint.
-  The critic keeps full state.
+  The actor loses the T's pose and reads it off the image. It keeps goal_position,
+  which is a virtual point in the air and cannot be seen -- see the module docstring
+  for why that is a different situation from Push-T's footprint. The critic keeps
+  full state.
   """
-  cfg = so101_lift_cube_env_cfg(play=play)
+  cfg = so101_lift_t_env_cfg(play=play)
 
   cam_cfg = CameraSensorCfg(
     name="camera_klip",
@@ -219,18 +204,8 @@ def so101_lift_cube_vision_env_cfg(
     concatenate_terms=True,
   )
 
-  if cam_type == "rgb":
-    cfg.events["cube_color"] = EventTermCfg(
-      func=dr.geom_rgba,
-      mode="reset",
-      params={
-        "asset_cfg": SceneEntityCfg("cube", geom_names=(".*",)),
-        "operation": "abs",
-        "distribution": "uniform",
-        "axes": [0, 1, 2],
-        "ranges": CUBE_COLOR_RANGE,
-      },
-    )
+  # No colour randomization: the T is printed in one grey. See the module
+  # docstring -- randomizing it trains on an object the real camera cannot show.
 
   actor = cfg.observations["actor"]
   actor.terms.pop("ee_to_cube", None)

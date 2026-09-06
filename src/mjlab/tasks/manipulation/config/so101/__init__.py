@@ -8,12 +8,12 @@ from .env_cfgs import (
   so101_push_t_visual_goal_env_cfg,
 )
 from .lift_cfgs import (
-  so101_lift_cube_env_cfg,
-  so101_lift_cube_vision_env_cfg,
+  so101_lift_t_env_cfg,
+  so101_lift_t_vision_env_cfg,
 )
 from .rl_cfg import (
-  so101_lift_cube_ppo_runner_cfg,
-  so101_lift_cube_vision_ppo_runner_cfg,
+  so101_lift_t_ppo_runner_cfg,
+  so101_lift_t_vision_ppo_runner_cfg,
   so101_push_t_camera_ppo_runner_cfg,
   so101_push_t_ppo_runner_cfg,
   so101_push_t_push_ppo_runner_cfg,
@@ -53,17 +53,17 @@ register_mjlab_task(
 )
 
 register_mjlab_task(
-  task_id="Mjlab-Lift-Cube-So101",
-  env_cfg=so101_lift_cube_env_cfg(),
-  play_env_cfg=so101_lift_cube_env_cfg(play=True),
-  rl_cfg=so101_lift_cube_ppo_runner_cfg(),
+  task_id="Mjlab-Lift-T-So101",
+  env_cfg=so101_lift_t_env_cfg(),
+  play_env_cfg=so101_lift_t_env_cfg(play=True),
+  rl_cfg=so101_lift_t_ppo_runner_cfg(),
   runner_cls=ManipulationOnPolicyRunner,
 )
 
 register_mjlab_task(
-  task_id="Mjlab-Lift-Cube-So101-Rgb",
-  env_cfg=so101_lift_cube_vision_env_cfg(cam_type="rgb"),
-  play_env_cfg=so101_lift_cube_vision_env_cfg(cam_type="rgb", play=True),
-  rl_cfg=so101_lift_cube_vision_ppo_runner_cfg(),
+  task_id="Mjlab-Lift-T-So101-Rgb",
+  env_cfg=so101_lift_t_vision_env_cfg(cam_type="rgb"),
+  play_env_cfg=so101_lift_t_vision_env_cfg(cam_type="rgb", play=True),
+  rl_cfg=so101_lift_t_vision_ppo_runner_cfg(),
   runner_cls=ManipulationOnPolicyRunner,
 )
