@@ -24,6 +24,15 @@ Changed
 Fixed
 ^^^^^
 
+- A NaN or Inf in a single MuJoCo Warp world no longer kills the whole training run.
+  The blow-up was permanent once it appeared -- ``qacc_warmstart`` carried it into the
+  next solve, from where it reached ``qpos`` and the observation buffer and rsl_rl's
+  ``check_nan`` aborted the run, losing hours of training to one bad environment out of
+  thousands. ``ManagerBasedRlEnv.step`` now restores those environments with
+  ``mjwarp.reset_data`` and truncates their episode, leaving every other environment
+  untouched, and logs the running total as ``Sim/nan_env_recoveries``. Set
+  ``recover_nan_envs=False`` to get the old behaviour when debugging the blow-up
+  itself.
 - Capped ``wandb`` below 0.29, which removed the ``start_method`` setting still passed
   by ``rsl-rl-lib`` and crashed training runs launched with ``--logger wandb``.
 - ``distribution="gaussian"`` domain randomization now draws an independent value per

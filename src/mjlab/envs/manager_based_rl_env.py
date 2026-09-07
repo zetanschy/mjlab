@@ -41,6 +41,7 @@ from mjlab.sim import SimulationCfg
 from mjlab.sim.sim import Simulation
 from mjlab.utils import random as random_utils
 from mjlab.utils.logging import print_info
+from mjlab.utils.nan_guard import NanGuard
 from mjlab.utils.spaces import Box
 from mjlab.utils.spaces import Dict as DictSpace
 from mjlab.viewer.debug_visualizer import DebugVisualizer
@@ -162,6 +163,20 @@ class ManagerBasedRlEnvCfg:
   algorithms that expect unscaled reward signals (e.g., HER, static reward scaling).
   """
 
+  recover_nan_envs: bool = True
+  """Whether to reset individual environments whose physics state goes non-finite.
+
+  MuJoCo Warp occasionally produces a NaN/Inf in one world out of thousands. The
+  NaN is permanent once it appears: it survives in ``qacc_warmstart``, reaches the
+  observation buffer, and rsl_rl's ``check_nan`` aborts the run -- so a multi-hour
+  training job dies because of a single bad environment.
+
+  When True (default), ``step()`` detects those environments, restores them with
+  ``mjwarp.reset_data`` and truncates their episode, leaving the other environments
+  untouched. Set to False to let the NaN propagate, which is what you want when
+  debugging the underlying blow-up rather than training through it.
+  """
+
 
 class ManagerBasedRlEnv:
   """Manager-based RL environment."""
@@ -188,6 +203,8 @@ class ManagerBasedRlEnv:
     self._sim_step_counter = 0
     self.extras = {}
     self.obs_buf = {}
+    # Running total of envs restored by _recover_nan_envs().
+    self._nan_recovery_count = 0
     self._manual_reset_pending = torch.zeros(
       self.cfg.scene.num_envs, dtype=torch.bool, device=device
     )
@@ -442,6 +459,10 @@ class ManagerBasedRlEnv:
       self.scene.update(dt=self.physics_dt)
       self.metrics_manager.compute_substep()
 
+    # Restore any env whose physics went non-finite, before the managers read
+    # the state. Returns the env ids so they can be truncated below.
+    nan_env_ids = self._recover_nan_envs()
+
     # Update env counters.
     self.episode_length_buf += 1
     self.common_step_counter += 1
@@ -452,6 +473,18 @@ class ManagerBasedRlEnv:
     self.reset_buf = self.termination_manager.compute()
     self.reset_terminated = self.termination_manager.terminated
     self.reset_time_outs = self.termination_manager.time_outs
+
+    if nan_env_ids is not None:
+      # Truncate rather than terminate. The episode ended for a reason outside
+      # the MDP, so the critic should bootstrap the value of continuing instead
+      # of learning that the pre-blow-up state is worth zero. Writing through
+      # the manager's buffers is safe: compute() clears both every step.
+      self.reset_buf[nan_env_ids] = True
+      self.reset_terminated[nan_env_ids] = False
+      self.reset_time_outs[nan_env_ids] = True
+
+    if self._nan_recovery_count:
+      self.extras["log"]["Sim/nan_env_recoveries"] = float(self._nan_recovery_count)
 
     self.reward_buf = self.reward_manager.compute(dt=self.step_dt)
     self.metrics_manager.compute()
@@ -576,6 +609,47 @@ class ManagerBasedRlEnv:
 
     self.observation_space = batch_space(self.single_observation_space, self.num_envs)
     self.action_space = batch_space(self.single_action_space, self.num_envs)
+
+  def _recover_nan_envs(self) -> torch.Tensor | None:
+    """Restore environments whose physics state went non-finite.
+
+    MuJoCo Warp occasionally produces a NaN/Inf in a single world -- a rare
+    solver edge case rather than anything the policy did, and one that shows up
+    after hours of training with thousands of worlds in flight. It is not
+    self-correcting: ``qacc_warmstart`` carries the NaN into the next solve, and
+    from there it reaches ``qpos`` and the observation buffer, at which point
+    rsl_rl's ``check_nan`` aborts the whole run.
+
+    ``mjwarp.reset_data`` rebuilds the affected worlds from scratch, warmstart
+    included, and touches no other world. This runs *before* the termination,
+    reward and observation managers so they never see the NaN; the caller
+    truncates the episode so the managers reset the env properly.
+
+    Returns the affected env ids, or None if every env is finite.
+    """
+    if not self.cfg.recover_nan_envs:
+      return None
+
+    nan_mask = NanGuard.detect_nans(self.sim.data)
+    # Syncs with the device, but step() already syncs on reset_buf.nonzero().
+    if not bool(nan_mask.any()):
+      return None
+
+    nan_env_ids = nan_mask.nonzero(as_tuple=False).squeeze(-1)
+    self._nan_recovery_count += int(nan_env_ids.numel())
+    print_info(
+      f"[NaN recovery] Reset {nan_env_ids.numel()} env(s) with a non-finite "
+      f"physics state: {nan_env_ids[:10].cpu().tolist()} "
+      f"(total this run: {self._nan_recovery_count})",
+      color="yellow",
+    )
+
+    self.sim.reset(nan_env_ids)
+    # reset_data zeroes the derived quantities too, so refresh them and the
+    # entity buffers that cache them before any manager reads the state.
+    self.sim.forward()
+    self.scene.update(dt=self.physics_dt)
+    return nan_env_ids
 
   def _reset_idx(self, env_ids: torch.Tensor | None = None) -> None:
     self.curriculum_manager.compute(env_ids=env_ids)
