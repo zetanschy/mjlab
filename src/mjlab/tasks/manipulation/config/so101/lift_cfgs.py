@@ -1,9 +1,13 @@
 """Lifting the grey T on the SO-ARM101, from the wrist camera.
 
 mjlab's Mjlab-Lift-Cube-Yam-Rgb, transplanted onto an arm a third of the size and
-onto the object agent_101 actually owns. The reward, the command term and the
-curriculum are taken unchanged; what had to move is everything encoding how far the
-YAM reaches, how wide it opens, and what it is holding.
+onto the object agent_101 actually owns. The command term is taken unchanged; what
+had to move is everything encoding how far the YAM reaches, how wide it opens, and
+what it is holding -- and, once this had been trained, the joint_vel_hinge
+curriculum and the two lift kernels as well. Those three were inherited unchanged
+at first and cost a run: 0.69 success at iteration 949, then a collapse to 0.05
+that never recovered. The arithmetic is in so101_lift_t_env_cfg beside the
+overrides.
 
 THE OBJECT IS THE PUSH-T BLOCK, not a cube -- the same get_t_object_spec, the same
 grey, the same 105 g. This bench has one printed manipuland and a policy trained
@@ -143,6 +147,52 @@ def so101_lift_t_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   for term in ("lift", "lift_precise"):
     cfg.rewards[term].params["object_name"] = OBJECT_NAME
   lift.entity_name = OBJECT_NAME
+
+  # THE CURRICULUM AND THE TWO LIFT KERNELS were the last YAM numbers left in
+  # here, and they were the ones that mattered. Trained as inherited, this task
+  # reached 0.69 success at iteration 949 and then collapsed to 0.05 and stayed
+  # there for 1900 iterations. Both halves of that are fixed below.
+  #
+  #   WHAT BROKE IT. The third curriculum stage steps joint_vel_hinge's weight
+  #   from -0.1 to -1.0 at iteration 1000. Lifting the T 0.1 m in half a second
+  #   needs about 2 rad/s through the shoulder and elbow -- four times the
+  #   0.5 rad/s hinge, which the quadratic charges as (2 - 0.5)^2 = 2.25 per
+  #   joint against a lift_precise bonus worth at most 1.0. On an arm a third of
+  #   the YAM's size the same gripper motion costs proportionally more joint
+  #   speed (v = omega * r), so a penalty the YAM absorbed makes lifting
+  #   unprofitable here. Within 40 iterations the policy had driven the penalty
+  #   back to its pre-jump value by not moving fast, which on this arm means not
+  #   lifting: object_height went 0.048 -> 0.008.
+  #
+  # Raising max_vel rather than the weight keeps the term aimed at genuinely
+  # excessive speed instead of the speed the task requires, and it arrives at
+  # 2000 rather than 1000 so the lift is solid before smoothness is asked for.
+  # At max_vel=1.5 the arithmetic above becomes (2 - 1.5)^2 = 0.25 per joint,
+  # so the weight could go back to -1.0 if this needs more smoothness pressure
+  # for transfer.
+  assert cfg.curriculum is not None
+  cfg.curriculum["joint_vel_hinge_weight"].params["stages"] = [
+    {"step": 0, "weight": -0.01},
+    {"step": 500 * 24, "weight": -0.1},
+    {"step": 2000 * 24, "weight": -0.1, "params": {"max_vel": 1.5}},
+  ]
+
+  #   WHY IT NEVER CAME BACK. staged_position_reward is reaching * (1 + bringing)
+  #   with bringing = exp(-d^2 / bringing_std^2). At the YAM's bringing_std=0.3,
+  #   a T sitting on the table 0.14 m from the goal already scores
+  #   exp(-0.0196/0.09) = 0.80, so hovering the gripper over an unlifted block
+  #   pays 1.80 of the 2.00 ceiling -- and the logs show Episode_Reward/lift
+  #   pinned at 1.73-1.76 straight through the collapse. The policy gave up
+  #   lifting and lost almost nothing. Meanwhile lift_precise at std=0.05 is
+  #   exp(-0.0196/0.0025) = 4e-4 at that distance: numerically zero, so nothing
+  #   pointed back up.
+  #
+  # Tightening bringing_std to 0.12 drops the do-nothing score to
+  # exp(-0.0196/0.0144) = 0.26, i.e. 1.26 of 2.00, leaving real headroom for the
+  # lift. Widening lift_precise to 0.08 turns its needle into a gradient: 0.047
+  # at 0.14 m, and 0.68 at the 0.05 m success threshold.
+  cfg.rewards["lift"].params["bringing_std"] = 0.12
+  cfg.rewards["lift_precise"].params["std"] = 0.08
 
   for term in (
     "fingertip_friction_slide",

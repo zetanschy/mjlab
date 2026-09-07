@@ -24,6 +24,17 @@ Changed
 Fixed
 ^^^^^
 
+- ``Mjlab-Lift-T-So101`` and ``-Rgb`` no longer collapse once the ``joint_vel_hinge``
+  curriculum reaches its last stage. The stage was inherited from the YAM task, where
+  it steps the weight to -1.0 against a 0.5 rad/s hinge; on an arm a third of that
+  size the same gripper motion needs proportionally more joint speed, so lifting the T
+  cost more than it paid and the policy gave it up -- 0.69 success at iteration 949
+  down to 0.05, with no recovery over the following 1900 iterations. The stage now
+  raises ``max_vel`` to 1.5 instead of the weight, and arrives at iteration 2000. The
+  two lift kernels were re-derived for this arm at the same time: ``bringing_std``
+  0.3 to 0.12, so that hovering over an unlifted block no longer scores 1.80 of the
+  2.00 ceiling, and ``lift_precise``'s ``std`` 0.05 to 0.08, so it gives a gradient
+  rather than a needle. The YAM tasks are unaffected.
 - A NaN or Inf in a single MuJoCo Warp world no longer kills the whole training run.
   The blow-up was permanent once it appeared -- ``qacc_warmstart`` carried it into the
   next solve, from where it reached ``qpos`` and the observation buffer and rsl_rl's
