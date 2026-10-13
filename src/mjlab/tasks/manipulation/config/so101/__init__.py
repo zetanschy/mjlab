@@ -1,3 +1,4 @@
+from mjlab.asset_zoo.robots.so_arm101 import twin as _twin
 from mjlab.tasks.manipulation.rl import ManipulationOnPolicyRunner
 from mjlab.tasks.registry import register_mjlab_task
 
@@ -67,3 +68,19 @@ register_mjlab_task(
   rl_cfg=so101_lift_t_vision_ppo_runner_cfg(),
   runner_cls=ManipulationOnPolicyRunner,
 )
+
+# Cap-to-mug on the agent_101 digital twin. It needs the twin (agent_101/sim/real2sim,
+# see asset_zoo/robots/so_arm101/twin.py); registered only where it is on disk.
+if (_twin_root := _twin.AGENT101 / "sim" / "real2sim").is_dir():
+  from .cap_to_mug_cfgs import (
+    so101_cap_to_mug_env_cfg,
+    so101_cap_to_mug_ppo_runner_cfg,
+  )
+
+  register_mjlab_task(
+    task_id="Mjlab-CapToMug-So101-Twin",
+    env_cfg=so101_cap_to_mug_env_cfg(),
+    play_env_cfg=so101_cap_to_mug_env_cfg(play=True),
+    rl_cfg=so101_cap_to_mug_ppo_runner_cfg(),
+    runner_cls=ManipulationOnPolicyRunner,
+  )

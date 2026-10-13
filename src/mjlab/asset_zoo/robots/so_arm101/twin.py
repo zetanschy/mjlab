@@ -286,8 +286,10 @@ def scene_cfg(
   sensors=(),
   ds: str | None = None,
   look: bool = True,
+  joint_pos: dict[str, float] | None = None,
 ):
-  """An mjlab SceneCfg of the twin: robot (XML actuators), `n_caps` caps, the mug."""
+  """An mjlab SceneCfg of the twin: robot (XML actuators), `n_caps` caps, the mug.
+  joint_pos: the robot's default joint pose (entity reset), e.g. the rest pose."""
   t = twin()
   joints = tuple(t.units.URDF_JOINTS)
   robot = EntityCfg(
@@ -296,6 +298,8 @@ def scene_cfg(
       actuators=(XmlActuatorCfg(target_names_expr=joints),)
     ),
   )
+  if joint_pos is not None:
+    robot.init_state = EntityCfg.InitialStateCfg(joint_pos=dict(joint_pos))
   z = float(t.model.table_top(scene(ds), *PARK_XY))
   entities = {
     "robot": robot,
