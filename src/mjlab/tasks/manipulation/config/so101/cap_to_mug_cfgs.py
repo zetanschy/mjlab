@@ -10,9 +10,10 @@ Action: an integrated joint target per joint (cap_to_mug_mdp.IntegratedJointPosi
 ActionCfg), up to 0.05 rad per frame on the arm (1.5 rad/s; the identified servo
 slews at 5.3) and 0.1 on the jaw.
 
-Rewards, in stages: reach the cap, both fingers on it, lift it over the 12 cm rim,
-carry it over the mug's axis, have it inside (the twin's cap_in_mug), then return to
-the rest pose and stay still. Penalties: action rate, joint limits, pushing the mug.
+Rewards, in stages: reach the cap, close the jaw there, both fingers on it, lift it
+over the 12 cm rim, carry it over the mug's axis, lower it in, have it inside (the
+twin's cap_in_mug), let go, get clear of the mug, then return to the rest pose and stay
+still. Penalties: action rate, joint limits, pushing the mug.
 Episodes end on time (20 s; the demos took 10-30 s), a tipped mug or a lost cap.
 """
 
@@ -21,6 +22,7 @@ from __future__ import annotations
 from mjlab.asset_zoo.robots.so_arm101 import twin
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.event_manager import EventTermCfg
+from mjlab.managers.metrics_manager import MetricsTermCfg
 from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
@@ -98,6 +100,13 @@ def so101_cap_to_mug_env_cfg(
     )
   }
   events = {
+    # First: it logs the ending episodes' success, and reset_arm would already have put
+    # the arm back at rest, making cap_in_mug_and_home read the same as cap_in_mug.
+    "reset_layout": EventTermCfg(
+      func=c2m.reset_layout,
+      mode="reset",
+      params={"p_open": p_open, "max_cap_mug": max_cap_mug},
+    ),
     "reset_base": EventTermCfg(
       func=mdp.reset_root_state_uniform,
       mode="reset",
@@ -116,19 +125,22 @@ def so101_cap_to_mug_env_cfg(
         "asset_cfg": SceneEntityCfg(c2m.ROBOT, joint_names=(".*",)),
       },
     ),
-    "reset_layout": EventTermCfg(
-      func=c2m.reset_layout,
-      mode="reset",
-      params={"p_open": p_open, "max_cap_mug": max_cap_mug},
-    ),
   }
   rewards = {
     "reach": RewardTermCfg(func=c2m.reward_reach, weight=1.0),
+    "close": RewardTermCfg(func=c2m.reward_close, weight=0.5),
     "grasp": RewardTermCfg(func=c2m.reward_grasp, weight=0.5),
     "lift": RewardTermCfg(func=c2m.reward_lift, weight=2.0),
     "carry": RewardTermCfg(func=c2m.reward_carry, weight=4.0),
+    "lower": RewardTermCfg(func=c2m.reward_lower, weight=4.0),
     "in_mug": RewardTermCfg(func=c2m.reward_in_mug, weight=10.0),
-    "home": RewardTermCfg(func=c2m.reward_home, weight=3.0),
+    # 5, not 0.5: at 0.5 opening was <3% of the ~18/step a held cap in the mug earns,
+    # and 500 iterations never moved the jaw.
+    "release": RewardTermCfg(func=c2m.reward_release, weight=5.0),
+    "clear": RewardTermCfg(func=c2m.reward_clear, weight=2.0),
+    # 10, not 3: at 3 finishing the trip home was ~5% of the ~25/step a placed, released
+    # cap earns; the arm stopped 1.5 rad short of a path a scripted move took 93% safely.
+    "home": RewardTermCfg(func=c2m.reward_home, weight=10.0),
     "action_rate": RewardTermCfg(func=mdp.action_rate_l2, weight=-0.01),
     "joint_limits": RewardTermCfg(
       func=mdp.joint_pos_limits,
@@ -149,6 +161,14 @@ def so101_cap_to_mug_env_cfg(
     events=events,
     rewards=rewards,
     terminations=terminations,
+    # reduce="last", computed each step before any reset: logging them from the reset
+    # event read a state sim.reset had already restored, so "and_home" was always 0.
+    metrics={
+      "cap_in_mug": MetricsTermCfg(func=c2m.metric_cap_in_mug, reduce="last"),
+      "cap_in_mug_and_home": MetricsTermCfg(
+        func=c2m.metric_cap_in_mug_and_home, reduce="last"
+      ),
+    },
     viewer=ViewerConfig(
       origin_type=ViewerConfig.OriginType.ASSET_BODY,
       entity_name=c2m.ROBOT,

@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 
 ROBOT, CAP, MUG = "robot", "cap0", "mug"
 GRASP_SITE = "grasp_site"
+HOME_RAD = 0.3  # arm_to_rest within this is "home": the success metric and reward_home
 FLIP_X = (0.0, 1.0, 0.0, 0.0)  # an open-side-up cap: the twin's _FLIP_X (objects.py)
 
 
@@ -171,6 +172,14 @@ def cap_in_mug(env: ManagerBasedRlEnv, margin: float = 0.0) -> torch.Tensor:
   )
 
 
+def metric_cap_in_mug(env: ManagerBasedRlEnv) -> torch.Tensor:
+  return cap_in_mug(env).float()
+
+
+def metric_cap_in_mug_and_home(env: ManagerBasedRlEnv) -> torch.Tensor:
+  return (cap_in_mug(env) & (arm_to_rest(env) < HOME_RAD)).float()
+
+
 def rim_centre_w(env: ManagerBasedRlEnv) -> torch.Tensor:
   mug: Entity = env.scene[MUG]
   z = torch.tensor([0.0, 0.0, 1.0], device=env.device).expand_as(
@@ -274,24 +283,13 @@ def reset_layout(
 ) -> None:
   """Place the cap and the mug as layouts.random + objects.cap_pose / mug_pose would:
   resting on the (tilted) table, an open-up cap flipped about x, the mug yawed by its
-  handle angle. Also records the episode's starting mug position and logs the success
-  of the episodes being reset (before they are)."""
+  handle angle. Also records the episode's starting mug position."""
   if env_ids is None:
     env_ids = torch.arange(env.num_envs, device=env.device)
   c = constants()
   n = len(env_ids)
   dev = env.device
   st = _state(env)
-  if st["started"].any():
-    done = env_ids[st["started"][env_ids]]
-    if len(done):
-      win = (cap_in_mug(env)[done] & (arm_to_rest(env)[done] < 0.3)).float()
-      env.extras.setdefault("log", {})["Metrics/cap_in_mug_and_home"] = float(
-        win.mean()
-      )
-      env.extras["log"]["Metrics/cap_in_mug"] = float(
-        cap_in_mug(env)[done].float().mean()
-      )
   cap_xy, is_open, mug_xy, yaw = sample_layouts(n, dev, p_open, max_cap_mug)
   origin = _origins(env)[env_ids]
   cap_z = _table_z(cap_xy) + torch.where(is_open, c["cap_h"], 0.0)
@@ -308,16 +306,12 @@ def reset_layout(
   env.scene[CAP].write_root_state_to_sim(cap_state, env_ids=env_ids)
   env.scene[MUG].write_root_state_to_sim(mug_state, env_ids=env_ids)
   st["mug_xy0"][env_ids] = mug_xy
-  st["started"][env_ids] = True
 
 
 def _state(env: ManagerBasedRlEnv) -> dict:
   st = getattr(env, "_cap_to_mug", None)
   if st is None:
-    st = {
-      "mug_xy0": torch.zeros(env.num_envs, 2, device=env.device),
-      "started": torch.zeros(env.num_envs, dtype=torch.bool, device=env.device),
-    }
+    st = {"mug_xy0": torch.zeros(env.num_envs, 2, device=env.device)}
     env._cap_to_mug = st  # type: ignore[attr-defined]
   return st
 
@@ -378,6 +372,33 @@ def reward_reach(env: ManagerBasedRlEnv, std: float = 0.05) -> torch.Tensor:
   return (1 - torch.tanh(d / std)) * (~cap_in_mug(env)).float()
 
 
+def jaw_open(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """0 with the jaw at its lower (closed) limit, 1 at its upper (open) one."""
+  robot: Entity = env.scene[ROBOT]
+  jaw = robot.joint_names.index("Jaw")
+  lo, hi = robot.data.soft_joint_pos_limits[:, jaw].unbind(-1)
+  return (robot.data.joint_pos[:, jaw] - lo) / (hi - lo)
+
+
+def reward_close(env: ManagerBasedRlEnv, std: float = 0.015) -> torch.Tensor:
+  """Close the jaw while the grasp site is at the cap.
+
+  Reach alone is maximised with the jaw wide open, and without this the teacher sat
+  there: at iteration 2300 the grasp site was 7 mm from the cap with the jaw at its
+  open limit all episode, so the moving finger never touched and grasp never paid."""
+  d = torch.linalg.norm(cap_centre_w(env) - ee_pos_w(env), dim=-1)
+  near = torch.exp(-((d / std) ** 2))
+  return near * (1 - jaw_open(env)) * (~cap_in_mug(env)).float()
+
+
+def reward_release(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Open the jaw once the cap is in the mug.
+
+  Letting go earned nothing, and moving off with the cap gripped pulls it back out: run
+  4's teacher had the cap in by 2 s and held it, jaw shut, for the other 18 s."""
+  return cap_in_mug(env).float() * jaw_open(env)
+
+
 def reward_grasp(env: ManagerBasedRlEnv) -> torch.Tensor:
   """Both fingers on the cap."""
   return fingers_on_cap(env).all(dim=-1).float() * (~cap_in_mug(env)).float()
@@ -387,29 +408,72 @@ def reward_lift(env: ManagerBasedRlEnv, clearance: float = 0.03) -> torch.Tensor
   """Held and raised, up to the rim plus `clearance` (the rim is 12 cm up)."""
   target = constants()["mug_h"] + clearance
   held = fingers_on_cap(env).all(dim=-1)
-  return held.float() * torch.clamp(lift_height(env) / target, 0.0, 1.0)
+  # Not once it is in the mug: holding it there paid ~1.2 and the teacher never let go.
+  frac = torch.clamp(lift_height(env) / target, 0.0, 1.0)
+  return held.float() * frac * (~cap_in_mug(env)).float()
+
+
+def over_opening(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """The whole cap within the mug's opening in xy (at any height above its floor)."""
+  c = constants()
+  r = torch.linalg.norm(cap_in_mug_local(env)[:, :2], dim=-1)
+  return r < c["mug_ri"] - c["cap_d"] / 2
 
 
 def reward_carry(env: ManagerBasedRlEnv, std: float = 0.08) -> torch.Tensor:
-  """Over the rim and closing on the mug's axis: the cap's underside above the rim,
-  its centre's xy toward the rim centre's."""
+  """Over the rim and closing on the mug's axis: the cap's underside above the rim
+  (or the cap over the opening, so the reward does not drop out on the way in), its
+  centre's xy toward the rim centre's."""
   cap_c, rim = cap_centre_w(env), rim_centre_w(env)
   above = (cap_c[:, 2] - constants()["cap_h"] / 2) > rim[:, 2] + 0.005
   d = torch.linalg.norm(cap_c[:, :2] - rim[:, :2], dim=-1)
-  return (above | cap_in_mug(env)).float() * (1 - torch.tanh(d / std))
+  return (above | over_opening(env)).float() * (1 - torch.tanh(d / std))
+
+
+def reward_lower(env: ManagerBasedRlEnv, std: float = 0.05) -> torch.Tensor:
+  """Over the opening, bring the cap down to the rim; full once its centre is inside.
+
+  Without it nothing pays for the descent: the iteration-2999 teacher held the cap over
+  the opening a median 84 mm above the rim for 91% of the episode, and never in."""
+  dz = cap_in_mug_local(env)[:, 2] - constants()["mug_h"]
+  return over_opening(env).float() * (1 - torch.tanh(dz.clamp(min=0.0) / std))
 
 
 def reward_in_mug(env: ManagerBasedRlEnv) -> torch.Tensor:
   return cap_in_mug(env).float()
 
 
-def reward_home(env: ManagerBasedRlEnv, std: float = 0.3) -> torch.Tensor:
-  """With the cap in the mug: back to the rest pose, and still (the behaviour the
-  operator corrected for in the DAgger rounds)."""
+# side 0.02, not 0.05: at 0.05 the teacher stopped on the way home 4.6+ cm above the rim
+# but a median 3.9 cm out (iteration 9099), where going lower toward rest lost clear.
+def reward_clear(
+  env: ManagerBasedRlEnv, height: float = 0.04, side: float = 0.02
+) -> torch.Tensor:
+  """Once the cap is in the mug: the grasp site clear of the mug, `height` above its rim
+  or `side` beyond its outer wall, so the way home is free (and stays paid on it).
+
+  After letting go the lowest finger piece sat 3 mm above the rim (iteration 6600), where
+  every move toward rest catches the mug, and the arm stayed ~3 rad from home."""
+  ee, rim = ee_pos_w(env), rim_centre_w(env)
+  up = ((ee[:, 2] - rim[:, 2]) / height).clamp(0.0, 1.0)
+  r = torch.linalg.norm(ee[:, :2] - rim[:, :2], dim=-1)
+  out = ((r - constants()["mug_ro"]) / side).clamp(0.0, 1.0)
+  return cap_in_mug(env).float() * torch.maximum(up, out)
+
+
+# std 3.0, not 0.3: with the cap in the mug the arm is a median 3.09 rad from rest
+# (iteration 3500), where a 0.3 kernel is ~0, so going home earned nothing on the way.
+def reward_home(env: ManagerBasedRlEnv, std: float = 3.0) -> torch.Tensor:
+  """With the cap in the mug: back to the rest pose, and still once there (the behaviour
+  the operator corrected for in the DAgger rounds)."""
   robot: Entity = env.scene[ROBOT]
   still = torch.exp(-torch.linalg.norm(robot.data.joint_vel[:, :5], dim=-1))
-  near = 1 - torch.tanh(arm_to_rest(env) / std)
-  return cap_in_mug(env).float() * near * still
+  d = arm_to_rest(env)
+  near = 1 - torch.tanh(d / std)
+  # Stillness is a bonus at home, not a factor: as a factor, arriving while still moving
+  # cut the reward, and the teacher stopped a median 0.68 rad short (iteration 10800).
+  # Scaled by reward_clear (which carries the cap-in-mug gate): from the rim the straight
+  # joint-space way home tipped the mug in 79% of scripted tries, lifted 5 cm first in 14%.
+  return reward_clear(env) * (near + (d < HOME_RAD).float() * still)
 
 
 def penalty_mug_moved(env: ManagerBasedRlEnv) -> torch.Tensor:

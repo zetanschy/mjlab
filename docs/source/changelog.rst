@@ -29,6 +29,20 @@ Fixed
   S1 spec at import time, so a missing ``astribot_simulation`` clone raised
   ``FileNotFoundError`` for whatever task was named. The S1 task now registers only
   when ``astribot_repo_path()`` finds the model; every other task is unaffected.
+- ``Mjlab-CapToMug-So101-Twin`` now learns the whole task: 94.3% of 1024 episodes
+  end with the cap in the mug and the arm home (95% CI 92.7-95.6%), against 0% before.
+  Each stage was a dead end for the one before it, so the rewards gain a stage
+  apiece: ``close`` (shut the jaw once at the cap: reach alone was maximised with it
+  wide open), ``lower`` (bring the cap down into the mug over the opening, where
+  ``carry`` also no longer drops out), ``release`` (open the jaw once it is in),
+  and ``clear`` (lift clear of the mug before heading home: the straight joint-space
+  way home tipped the mug in 79% of scripted tries, lifted 5 cm first in 14%).
+  ``home`` is scaled by ``clear``, its kernel widened from 0.3 to 3.0 rad, its weight
+  raised to 10, and stillness is a bonus at home instead of a factor that cut the
+  reward on arrival. ``lift`` stops once the cap is in the mug. ``cap_in_mug`` and
+  ``cap_in_mug_and_home`` are now ``Episode_Metrics`` with ``reduce="last"``: logged
+  from the reset event they read a state ``sim.reset`` had already restored, so
+  ``and_home`` was 0 even with the arm home.
 - ``Mjlab-Lift-T-So101`` and ``-Rgb`` no longer collapse once the ``joint_vel_hinge``
   curriculum reaches its last stage. The stage was inherited from the YAM task, where
   it steps the weight to -1.0 against a 0.5 rad/s hinge; on an arm a third of that
