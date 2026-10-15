@@ -24,6 +24,11 @@ Changed
 Fixed
 ^^^^^
 
+- ``train`` and ``play`` no longer fail on a machine without the Astribot S1 model.
+  mjlab imports every task to build its registry, and ``Mjlab-Push-T-S1`` compiled the
+  S1 spec at import time, so a missing ``astribot_simulation`` clone raised
+  ``FileNotFoundError`` for whatever task was named. The S1 task now registers only
+  when ``astribot_repo_path()`` finds the model; every other task is unaffected.
 - ``Mjlab-Lift-T-So101`` and ``-Rgb`` no longer collapse once the ``joint_vel_hinge``
   curriculum reaches its last stage. The stage was inherited from the YAM task, where
   it steps the weight to -1.0 against a 0.5 rad/s hinge; on an arm a third of that
