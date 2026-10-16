@@ -40,6 +40,10 @@ from .rl_cfg import so101_push_t_ppo_runner_cfg
 ARM = ("Rotation", "Pitch", "Elbow", "Wrist_Pitch", "Wrist_Roll")
 ACTION_SCALE = {**dict.fromkeys(ARM, 0.05), "Jaw": 0.1}  # rad per 30 Hz frame
 ACTION_CLIP = {**dict.fromkeys(ARM, (-0.1, 0.1)), "Jaw": (-0.2, 0.2)}
+# Wrist_Roll's target stays where the operator kept it: the 0.5-99.5% range of
+# cap_to_mug_real_50 (-2.93..-0.93 rad, rest -1.43) plus a little. Unlimited, the teacher
+# grasped rolled ~180 deg from rest, the grip camera under the gripper and at the table.
+WRIST_ROLL_RANGE = (-2.95, -0.90)
 
 
 def _finger_sensor(name: str, pattern: str) -> ContactSensorCfg:
@@ -96,7 +100,11 @@ def so101_cap_to_mug_env_cfg(
   }
   actions = {
     "joint_pos": c2m.IntegratedJointPositionActionCfg(
-      entity_name=c2m.ROBOT, actuator_names=joints, scale=ACTION_SCALE, clip=ACTION_CLIP
+      entity_name=c2m.ROBOT,
+      actuator_names=joints,
+      scale=ACTION_SCALE,
+      clip=ACTION_CLIP,
+      target_limits={"Wrist_Roll": WRIST_ROLL_RANGE},
     )
   }
   events = {
@@ -168,6 +176,8 @@ def so101_cap_to_mug_env_cfg(
       "cap_in_mug_and_home": MetricsTermCfg(
         func=c2m.metric_cap_in_mug_and_home, reduce="last"
       ),
+      # reduce="max": the share of episodes in which it ever came that low.
+      "grip_cam_low": MetricsTermCfg(func=c2m.metric_grip_cam_low, reduce="max"),
     },
     viewer=ViewerConfig(
       origin_type=ViewerConfig.OriginType.ASSET_BODY,

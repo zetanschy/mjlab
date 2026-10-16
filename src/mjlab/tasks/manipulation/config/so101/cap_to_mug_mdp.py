@@ -19,9 +19,10 @@ from __future__ import annotations
 import functools
 import importlib
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+import mujoco
 import numpy as np
 import torch
 
@@ -92,8 +93,11 @@ class IntegratedJointPositionActionCfg(BaseActionCfg):
   cannot be said. Integrating the TARGET is what a teleop leader or a policy sends the
   real servos: an absolute goal every 30 Hz frame, held until the next one. A zero
   action holds it. Reset puts the target at the entity's default joint pose (the twin's
-  rest pose), where the reset event also puts the arm.
+  rest pose), where the reset event also puts the arm. `target_limits` narrows the
+  clamp for named joints (rad), within their joint limits.
   """
+
+  target_limits: dict[str, tuple[float, float]] = field(default_factory=dict)
 
   def build(self, env: ManagerBasedRlEnv) -> IntegratedJointPositionAction:
     return IntegratedJointPositionAction(self, env)
@@ -104,7 +108,11 @@ class IntegratedJointPositionAction(BaseAction):
     super().__init__(cfg=cfg, env=env)
     ids = self._target_ids
     self._target = self._entity.data.default_joint_pos[:, ids].clone()
-    limits = self._entity.data.joint_pos_limits[:, ids]
+    limits = self._entity.data.joint_pos_limits[:, ids].clone()
+    for name, (lo, hi) in cfg.target_limits.items():
+      i = self._target_names.index(name)
+      limits[:, i, 0] = limits[:, i, 0].clamp(min=lo)
+      limits[:, i, 1] = limits[:, i, 1].clamp(max=hi)
     self._lo, self._hi = limits[..., 0], limits[..., 1]
 
   @property
@@ -178,6 +186,15 @@ def metric_cap_in_mug(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 def metric_cap_in_mug_and_home(env: ManagerBasedRlEnv) -> torch.Tensor:
   return (cap_in_mug(env) & (arm_to_rest(env) < HOME_RAD)).float()
+
+
+def metric_grip_cam_low(env: ManagerBasedRlEnv, margin: float = 0.02) -> torch.Tensor:
+  """1 while the grip camera is within `margin` of the table. Nothing in the twin stops
+  it: rolled under, it went a median 5 mm below the table surface (iteration 12299)."""
+  m = env.sim.mj_model
+  cam = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_CAMERA, f"{ROBOT}/grip")
+  p = env.sim.data.cam_xpos[:, cam]
+  return (p[:, 2] - _table_z(p[:, :2] - _origins(env)[:, :2]) < margin).float()
 
 
 def rim_centre_w(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -380,28 +397,55 @@ def jaw_open(env: ManagerBasedRlEnv) -> torch.Tensor:
   return (robot.data.joint_pos[:, jaw] - lo) / (hi - lo)
 
 
-def reward_close(env: ManagerBasedRlEnv, std: float = 0.015) -> torch.Tensor:
-  """Close the jaw while the grasp site is at the cap.
+# The cap centre in the gripper frame (m) while both fingers held it in a clean run
+# (5336 samples, 1-99%): x +3..+7 mm, y -9..+4, z -102..-79. The box widens that toward
+# the moving finger, which closes along -x from up to +86 mm open: a cap in it is between
+# the fingers, and with the jaw shut nothing but a grasp can put it there. z stops 6 mm
+# short of the fingertips (-104): a run that pinched the cap at z -100 dropped it in
+# 82-90% of scripted lifts and never lifted, while grasps at a median -95 carried it.
+GRASP_BOX = ((0.0, 0.05), (-0.012, 0.012), (-0.098, -0.075))
+
+
+def cap_between_fingers(env: ManagerBasedRlEnv) -> torch.Tensor:
+  robot: Entity = env.scene[ROBOT]
+  g = robot.find_bodies("gripper")[0][0]
+  d = cap_centre_w(env) - robot.data.body_link_pos_w[:, g]
+  loc = quat_apply(quat_inv(robot.data.body_link_quat_w[:, g]), d)
+  inside = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
+  for k, (lo, hi) in enumerate(GRASP_BOX):
+    inside &= (loc[:, k] > lo) & (loc[:, k] < hi)
+  return inside
+
+
+def reward_close(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Close the jaw while the cap is between the fingers.
 
   Reach alone is maximised with the jaw wide open, and without this the teacher sat
   there: at iteration 2300 the grasp site was 7 mm from the cap with the jaw at its
-  open limit all episode, so the moving finger never touched and grasp never paid."""
-  d = torch.linalg.norm(cap_centre_w(env) - ee_pos_w(env), dim=-1)
-  near = torch.exp(-((d / std) ** 2))
-  return near * (1 - jaw_open(env)) * (~cap_in_mug(env)).float()
+  open limit all episode, so the moving finger never touched and grasp never paid.
+  Gated by distance to the cap instead, clean runs shut the jaw on air 1.8 mm above it
+  and then 15 mm beside it, and never grasped."""
+  between = cap_between_fingers(env) & ~cap_in_mug(env)
+  return between.float() * (1 - jaw_open(env))
 
 
 def reward_release(env: ManagerBasedRlEnv) -> torch.Tensor:
-  """Open the jaw once the cap is in the mug.
+  """Let go once the cap is in the mug: full once no finger touches it, and until then the
+  jaw's opening, as a gradient toward that.
 
   Letting go earned nothing, and moving off with the cap gripped pulls it back out: run
-  4's teacher had the cap in by 2 s and held it, jaw shut, for the other 18 s."""
-  return cap_in_mug(env).float() * jaw_open(env)
+  4's teacher had the cap in by 2 s and held it, jaw shut, for the other 18 s. Paying
+  for the opening alone asked for a wide jaw: the clean run held the cap 5.8 cm inside
+  the mug, where opening fully tipped the mug in 22% of scripted tries and jammed at
+  0.42, while the fingers had already left the cap."""
+  free = ~fingers_on_cap(env).any(dim=-1)
+  return cap_in_mug(env).float() * torch.where(free, 1.0, jaw_open(env))
 
 
 def reward_grasp(env: ManagerBasedRlEnv) -> torch.Tensor:
-  """Both fingers on the cap."""
-  return fingers_on_cap(env).all(dim=-1).float() * (~cap_in_mug(env)).float()
+  """Both fingers on the cap, with it deep enough between them to hold (GRASP_BOX)."""
+  held = fingers_on_cap(env).all(dim=-1) & cap_between_fingers(env)
+  return held.float() * (~cap_in_mug(env)).float()
 
 
 def reward_lift(env: ManagerBasedRlEnv, clearance: float = 0.03) -> torch.Tensor:
@@ -443,10 +487,12 @@ def reward_in_mug(env: ManagerBasedRlEnv) -> torch.Tensor:
   return cap_in_mug(env).float()
 
 
-# side 0.02, not 0.05: at 0.05 the teacher stopped on the way home 4.6+ cm above the rim
-# but a median 3.9 cm out (iteration 9099), where going lower toward rest lost clear.
+# height 0.12 and side 0.065: the clean teacher parked 4.9 cm above the rim and 1 cm past
+# the wall, where the straight way home tipped the mug in 74% of scripted tries (23% got
+# home); lifted to 12 cm first, 25% (75% home), while 10 cm sideways at that height still
+# tipped it in 69%. Rest is 7.0+ cm past the wall in every layout, so stays clear.
 def reward_clear(
-  env: ManagerBasedRlEnv, height: float = 0.04, side: float = 0.02
+  env: ManagerBasedRlEnv, height: float = 0.12, side: float = 0.065
 ) -> torch.Tensor:
   """Once the cap is in the mug: the grasp site clear of the mug, `height` above its rim
   or `side` beyond its outer wall, so the way home is free (and stays paid on it).

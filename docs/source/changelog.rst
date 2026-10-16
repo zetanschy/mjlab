@@ -43,6 +43,20 @@ Fixed
   ``cap_in_mug_and_home`` are now ``Episode_Metrics`` with ``reduce="last"``: logged
   from the reset event they read a state ``sim.reset`` had already restored, so
   ``and_home`` was 0 even with the arm home.
+- ``Mjlab-CapToMug-So101-Twin`` no longer grasps with the wrist rolled ~180 deg, which
+  put the grip camera at the table (a median 5 mm below its surface, unpenalised since
+  nothing in the twin stops it), and it now learns from scratch in one run: 89.2% of
+  1024 episodes (95% CI 87.1-90.9%) with the camera a median 12 cm above the table.
+  ``Wrist_Roll``'s action target is limited to the operator's range in
+  ``cap_to_mug_real_50`` (``IntegratedJointPositionActionCfg.target_limits``), and a
+  ``grip_cam_low`` metric logs how often the camera comes within 2 cm of the table.
+  Clean runs then exposed four reward loopholes, each fixed where it was found:
+  ``close`` and ``grasp`` count only with the cap in a box between the fingers measured
+  from real grasps (the jaw had shut on air above and beside the cap, then pinched it
+  at the fingertips, where it slipped out of 82-90% of lifts); ``release`` pays once no
+  finger touches the cap, since opening fully from deep in the mug tipped it in 22%;
+  and ``clear`` wants 12 cm above the rim or 6.5 cm past the wall, since from 4.9 cm
+  the way home tipped the mug in 74% of scripted tries, against 25% from 12 cm.
 - ``Mjlab-Lift-T-So101`` and ``-Rgb`` no longer collapse once the ``joint_vel_hinge``
   curriculum reaches its last stage. The stage was inherited from the YAM task, where
   it steps the weight to -1.0 against a 0.5 rad/s hinge; on an arm a third of that
