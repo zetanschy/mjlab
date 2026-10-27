@@ -185,9 +185,30 @@ def robot_spec(
   )
   spec = captured["spec"]
   spec.modelname = "so101_twin"
+  _flat_textures(spec)
   for name in cameras:
     _undistorted_camera(spec, sc, name)
   return spec
+
+
+def _flat_textures(spec: mujoco.MjSpec) -> None:
+  """Each textured material becomes its texture's mean colour, untextured.
+
+  mujoco_warp's renderer does not apply these material textures: the look's mat
+  (a near-black texture on a white material) rendered white there, dark in MuJoCo's own
+  renderer (front camera mean RGB ~196 vs ~32). Flat, both renderers show the same mat;
+  only its fine texture is lost, invisible at the cameras' low resolutions anyway.
+  """
+  m = spec.copy().compile()
+  for mat in spec.materials:
+    tid = int(max(m.mat_texid[m.material(mat.name).id]))
+    if tid < 0:
+      continue
+    n, a = int(m.tex_nchannel[tid]), int(m.tex_adr[tid])
+    px = m.tex_data[a : a + int(m.tex_width[tid] * m.tex_height[tid]) * n]
+    mean = px.reshape(-1, n)[:, :3].mean(0) / 255.0
+    mat.rgba = [*(mean * np.asarray(mat.rgba[:3])), mat.rgba[3]]
+    mat.textures = [""] * len(mat.textures)
 
 
 def cap_spec(
