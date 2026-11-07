@@ -98,6 +98,13 @@ def so101_cap_to_mug_env_cfg(
     "actor": ObservationGroupCfg(_state_terms(noise=True), enable_corruption=not play),
     "critic": ObservationGroupCfg(_state_terms(noise=False), enable_corruption=False),
   }
+  # The servo's dead time and slew (twin.servo_goal_path): play (eval_teacher, collect)
+  # runs the identified 1.0 frame the live twin runs; training draws the live twin's
+  # DR range per episode (live/dr.py), which also covers the real loop's extra latency.
+  dead, slew = twin.servo_goal_path()
+  dead_range = (
+    (dead, dead) if play else tuple(twin.twin().dr.RANGES["dead_time_frames"])
+  )
   actions = {
     "joint_pos": c2m.IntegratedJointPositionActionCfg(
       entity_name=c2m.ROBOT,
@@ -105,6 +112,8 @@ def so101_cap_to_mug_env_cfg(
       scale=ACTION_SCALE,
       clip=ACTION_CLIP,
       target_limits={"Wrist_Roll": WRIST_ROLL_RANGE},
+      dead_time_frames=dead_range,
+      max_velocity=slew,
     )
   }
   events = {

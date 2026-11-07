@@ -24,6 +24,13 @@ Changed
 Fixed
 ^^^^^
 
+- ``Mjlab-CapToMug-So101-Twin``'s targets now reach the servos as the twin's do: each
+  takes effect after the identified dead time (1.0 frame, 33 ms) and is slewed at 5.29
+  rad/s, as ``real2sim.live``'s ``OnlineGoals`` applies them. Both live outside the
+  MjSpec, so the entities never carried them and the teacher learned to act on instant
+  targets: with the dead time, teacher 2800 falls from 92/100 to 61/100 on the
+  benchmark stages. Training draws 1-3 frames per episode (the twin's DR range), play
+  uses 1.0.
 - ``train`` and ``play`` no longer fail on a machine without the Astribot S1 model.
   mjlab imports every task to build its registry, and ``Mjlab-Push-T-S1`` compiled the
   S1 spec at import time, so a missing ``astribot_simulation`` clone raised

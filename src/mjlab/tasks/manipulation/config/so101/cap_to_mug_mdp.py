@@ -95,12 +95,31 @@ class IntegratedJointPositionActionCfg(BaseActionCfg):
   action holds it. Reset puts the target at the entity's default joint pose (the twin's
   rest pose), where the reset event also puts the arm. `target_limits` narrows the
   clamp for named joints (rad), within their joint limits.
+
+  THE SERVO'S GOAL PATH, as real2sim.live's OnlineGoals applies it to every command
+  (and check_twin's GoalStream to every replayed one): a target takes effect
+  `dead_time_frames` after it was sent, drawn per episode uniform in that range (the
+  identified servo: 1.0 frame, 33 ms), and the firmware slews toward it at
+  `max_velocity` rad/s. (0, 0) and None send the target to the actuators at once.
   """
 
   target_limits: dict[str, tuple[float, float]] = field(default_factory=dict)
+  dead_time_frames: tuple[float, float] = (0.0, 0.0)
+  max_velocity: float | None = None
 
   def build(self, env: ManagerBasedRlEnv) -> IntegratedJointPositionAction:
     return IntegratedJointPositionAction(self, env)
+
+
+SENT_FRAMES = 4  # targets kept per env: dead times up to SENT_FRAMES - 1 frames
+
+
+def frames_back(dead: torch.Tensor, substep: int, decimation: int) -> torch.Tensor:
+  """Which sent target acts at this substep, counted back from the newest (0). One
+  sent at frame k - j acts from k - j + dead on (OnlineGoals: t_push + dead_time, the
+  same 1e-9 tolerance), so at time k + substep / decimation it is the smallest such j."""
+  j = torch.ceil(dead - substep / decimation - 1e-9)
+  return j.clamp(0, SENT_FRAMES - 1).long()
 
 
 class IntegratedJointPositionAction(BaseAction):
@@ -114,6 +133,14 @@ class IntegratedJointPositionAction(BaseAction):
       limits[:, i, 0] = limits[:, i, 0].clamp(min=lo)
       limits[:, i, 1] = limits[:, i, 1].clamp(max=hi)
     self._lo, self._hi = limits[..., 0], limits[..., 1]
+    assert cfg.dead_time_frames[1] <= SENT_FRAMES - 1, cfg.dead_time_frames
+    self._sent = self._target[:, None].repeat(1, SENT_FRAMES, 1)  # oldest first
+    self._dead = torch.zeros(self.num_envs, device=self.device)
+    self._dead_range = cfg.dead_time_frames
+    self._goal = self._target.clone()  # the firmware's slewed target
+    self._slew = None if cfg.max_velocity is None else cfg.max_velocity * env.physics_dt
+    self._rows = torch.arange(self.num_envs, device=self.device)
+    self._substep, self._decimation = 0, env.cfg.decimation
 
   @property
   def target(self) -> torch.Tensor:
@@ -124,14 +151,29 @@ class IntegratedJointPositionAction(BaseAction):
     self._target = torch.clamp(
       self._target + self._processed_actions, self._lo, self._hi
     )
+    self._sent = torch.cat([self._sent[:, 1:], self._target[:, None]], dim=1)
+    self._substep = 0
 
   def apply_actions(self) -> None:
-    self._entity.set_joint_position_target(self._target, joint_ids=self._target_ids)
+    j = frames_back(self._dead, self._substep, self._decimation)
+    goal = self._sent[self._rows, SENT_FRAMES - 1 - j]
+    if self._slew is not None:
+      goal = torch.clamp(goal, self._goal - self._slew, self._goal + self._slew)
+    self._goal = goal
+    self._entity.set_joint_position_target(goal, joint_ids=self._target_ids)
+    self._substep += 1
 
   def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
     super().reset(env_ids)
+    if env_ids is None:
+      env_ids = slice(None)
     ids = self._target_ids
     self._target[env_ids] = self._entity.data.default_joint_pos[env_ids][:, ids]
+    # until the first command acts, the servo holds the rest pose (OnlineGoals' q0)
+    self._sent[env_ids] = self._target[env_ids][:, None]
+    self._goal[env_ids] = self._target[env_ids]
+    lo, hi = self._dead_range
+    self._dead[env_ids] = lo + (hi - lo) * torch.rand_like(self._dead[env_ids])
 
 
 # --- state helpers -------------------------------------------------------------------

@@ -95,6 +95,7 @@ def twin() -> SimpleNamespace:
     scene_mod=mod("real2sim.scene"),
     to_mujoco=mod("real2sim.camera").to_mujoco,
     layouts=mod("real2sim.live.layouts"),
+    dr=mod("real2sim.live.dr"),
     model=mod("real2sim.mujoco.model"),
     ServoModel=servo.ServoModel,
     FLEX_JOINT=servo.FLEX_JOINT,
@@ -107,6 +108,14 @@ def scene(ds: str | None = None):
   sim's server uses (ds None = its default dataset)."""
   t = twin()
   return t.scene_mod.load(t.paths.dataset(ds))
+
+
+def servo_goal_path(ds: str | None = None) -> tuple[float, float]:
+  """(dead time in 30 Hz frames, slew rad/s) of the identified servo (servo.json: 1.0,
+  5.29): what real2sim.live's OnlineGoals applies to every command. It is not in the
+  MjSpec, so the entities alone do not carry it; the action term does."""
+  s = twin().ServoModel.from_scene(scene(ds))
+  return s.dead_time * 30.0, float(s.max_velocity)
 
 
 # Experiments only (scripts/so101_twin): Physics fields to vary from the twin's, e.g.
