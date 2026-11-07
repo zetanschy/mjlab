@@ -17,6 +17,11 @@ Added
 Changed
 ^^^^^^^
 
+- ``Mjlab-CapToMug-So101-Twin`` trains with the changes its Hub teacher
+  (``model_2800``, 92.5% of 1024 episodes) was trained with, recorded in that model's
+  ``git/mjlab.diff`` but not committed until now: caps open side up half the time
+  (``p_open`` 0.5), ``reach`` brings the cap to ``GRASP_POINT`` in the gripper frame
+  instead of to the fingertip site, and ``grasp`` and ``lift`` weigh 2 and 6.
 - Bumped ``rsl-rl-lib`` from 5.4.2 to 5.5.0. This update removes the ``logger_type``
   attribute of the ``rsl_rl.utils.Logger``, so code that previously checked
   ``logger.logger_type`` must instead check the type of ``logger.writer``.

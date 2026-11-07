@@ -425,9 +425,19 @@ def obs_fingers_on_cap(env: ManagerBasedRlEnv) -> torch.Tensor:
 # --- rewards -------------------------------------------------------------------------
 
 
+# Where the cap centre sits in the gripper frame (m) when a grasp holds it: the medians of
+# two clean runs' two-finger grasps (x +6.5/+6.6, y -2.3/-2.3, z -93.2/-95.2 mm).
+GRASP_POINT = (0.0065, -0.0023, -0.094)
+
+
 def reward_reach(env: ManagerBasedRlEnv, std: float = 0.05) -> torch.Tensor:
-  """Bring the grasp site to the cap (until the cap is in the mug)."""
-  d = torch.linalg.norm(cap_centre_w(env) - ee_pos_w(env), dim=-1)
+  """Bring the cap to GRASP_POINT, where a grasp holds it (until it is in the mug).
+
+  Aimed at the grasp site, the fingertips, reach peaked with the gripper hovering on the
+  cap and fell as it went down around it: a clean run hovered there, jaw open, the cap
+  14 mm short of the grasp, for 900 iterations and never grasped."""
+  target = torch.tensor(GRASP_POINT, device=env.device)
+  d = torch.linalg.norm(cap_in_gripper(env) - target, dim=-1)
   return (1 - torch.tanh(d / std)) * (~cap_in_mug(env)).float()
 
 
@@ -448,11 +458,16 @@ def jaw_open(env: ManagerBasedRlEnv) -> torch.Tensor:
 GRASP_BOX = ((0.0, 0.05), (-0.012, 0.012), (-0.098, -0.075))
 
 
-def cap_between_fingers(env: ManagerBasedRlEnv) -> torch.Tensor:
+def cap_in_gripper(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """(B, 3) the cap centre in the gripper body frame."""
   robot: Entity = env.scene[ROBOT]
   g = robot.find_bodies("gripper")[0][0]
   d = cap_centre_w(env) - robot.data.body_link_pos_w[:, g]
-  loc = quat_apply(quat_inv(robot.data.body_link_quat_w[:, g]), d)
+  return quat_apply(quat_inv(robot.data.body_link_quat_w[:, g]), d)
+
+
+def cap_between_fingers(env: ManagerBasedRlEnv) -> torch.Tensor:
+  loc = cap_in_gripper(env)
   inside = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
   for k, (lo, hi) in enumerate(GRASP_BOX):
     inside &= (loc[:, k] > lo) & (loc[:, k] < hi)

@@ -78,11 +78,14 @@ def _state_terms(noise: bool) -> dict[str, ObservationTermCfg]:
 def so101_cap_to_mug_env_cfg(
   play: bool = False,
   num_envs: int = 4096,
-  p_open: float = 0.0,
+  p_open: float = 0.5,
   max_cap_mug: float | None = None,
 ) -> ManagerBasedRlEnvCfg:
-  """The state teacher. p_open: share of caps lying open side up (the twin's layouts
-  draw 0.5; start at 0). max_cap_mug: cap-mug distance cap, for a curriculum."""
+  """The state teacher. p_open: share of caps lying open side up, as the twin's layouts
+  (and so sim-eval's stages) draw them. Its collision is the same solid cylinder either
+  way, as in the twin; what flips is the observed cap_up, the look, and the hollow cap's
+  centre of mass, 2.3 mm toward its closed top. max_cap_mug: cap-mug distance cap, for a
+  curriculum."""
   joints = tuple(twin.twin().units.URDF_JOINTS)
   scene = twin.scene_cfg(
     num_envs=num_envs,
@@ -146,8 +149,14 @@ def so101_cap_to_mug_env_cfg(
   rewards = {
     "reach": RewardTermCfg(func=c2m.reward_reach, weight=1.0),
     "close": RewardTermCfg(func=c2m.reward_close, weight=0.5),
-    "grasp": RewardTermCfg(func=c2m.reward_grasp, weight=0.5),
-    "lift": RewardTermCfg(func=c2m.reward_lift, weight=2.0),
+    # 2, not 0.5: with the cap at GRASP_POINT, a jaw left half shut (0.46 rad) already
+    # earned 0.72 of close, and closing the last 0.36 rad onto it added ~0.15 + 0.5, so a
+    # clean run held it there, the moving finger off the cap, and never grasped.
+    "grasp": RewardTermCfg(func=c2m.reward_grasp, weight=2.0),
+    # 6, not 2: each stage should pay more than the one before. At grasp 2 = lift 2 a run
+    # held the cap 8 mm up for 600 iterations, elbow and wrist pitch at their limits, though
+    # a scripted lift from its grasps kept the cap in 100% of them.
+    "lift": RewardTermCfg(func=c2m.reward_lift, weight=6.0),
     "carry": RewardTermCfg(func=c2m.reward_carry, weight=4.0),
     "lower": RewardTermCfg(func=c2m.reward_lower, weight=4.0),
     "in_mug": RewardTermCfg(func=c2m.reward_in_mug, weight=10.0),
