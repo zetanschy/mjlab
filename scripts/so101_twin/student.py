@@ -14,8 +14,16 @@ THE LABEL is teacher_action, the teacher's clean action at every recorded state,
 where the executed action was noisy (DART). 5% of episodes are held out for validation.
 Images get a random shift of up to SHIFT px (DrQ), on top of the dataset's visual DR.
 
-Closed-loop score on the benchmark stages:
-  eval_teacher.py --student student_bc.pt --stages <a sim-eval trials.jsonl> --out ...
+Closed-loop score: in the live twin, which renders as the real camera sees (training
+also writes <out>.ts, below):
+  ./robot sim-eval --policy /workspace/<out>.ts --episodes 100 --name <name>
+
+ON A ROBOT: training also writes <out>.ts, the student as TorchScript (CPU) with
+contract.json inside: the joint orders, the action's scale, clip and target limits, the
+twin's lerobot <-> URDF units, and each camera's calibration and input size. agent_101's
+scripts/openpi/student_policy.py runs it from that alone (the real arm through the Eval
+page, the live twin through ./robot sim-eval). An older .pt: python -c 'import student;
+student.export(Path(...))' from this directory.
 """
 
 from __future__ import annotations
@@ -31,6 +39,10 @@ import torch
 import torch.nn.functional as F
 from collect import CAMS
 from torch import nn
+
+from mjlab.asset_zoo.robots.so_arm101 import twin
+from mjlab.tasks.manipulation.config.so101 import cap_to_mug_cfgs as cfgs
+from mjlab.tasks.manipulation.config.so101 import cap_to_mug_mdp as m
 
 SHIFT = 4  # px
 
@@ -72,15 +84,6 @@ class Student(nn.Module):
     z.append(self.joints((q - self.q_mean) / self.q_std))
     return self.head(torch.cat(z, -1)) * self.a_std + self.a_mean
 
-  @torch.no_grad()
-  def act(self, env) -> torch.Tensor:
-    """The action for every env of a collect.env_cfg env (cameras on)."""
-    return self(
-      env.scene["front_cam"].data.rgb,
-      env.scene["grip_cam"].data.rgb,
-      env.scene["robot"].data.joint_pos[:, :6],
-    )
-
   @classmethod
   def load(cls, path: Path, device: str) -> Student:
     s = cls().to(device)
@@ -95,6 +98,54 @@ def shift(x: torch.Tensor, pad: int = SHIFT) -> torch.Tensor:
   r = (torch.arange(h, device=x.device) + d[0]).clamp(0, h - 1)
   c = (torch.arange(w, device=x.device) + d[1]).clamp(0, w - 1)
   return x[torch.arange(b, device=x.device)[:, None, None], r[:, :, None], c[:, None]]
+
+
+def contract() -> dict:
+  """What a robot needs to run the student as it ran in the env, all from the twin and
+  the task config (see the module docstring)."""
+  t, sc = twin.twin(), twin.scene()
+  joints = list(t.units.URDF_JOINTS)
+  mj = twin.robot_spec(cameras=(), look=False).compile()
+  limits = [list(map(float, mj.joint(j).range)) for j in joints]
+  for j, (lo, hi) in {"Wrist_Roll": cfgs.WRIST_ROLL_RANGE}.items():  # the action's
+    i = joints.index(j)
+    limits[i] = [max(limits[i][0], lo), min(limits[i][1], hi)]
+  u = sc.units()
+  cams = {}
+  for c, (w, h) in CAMS.items():
+    cam = sc.camera(c)
+    cams[c] = {
+      "width": cam.width,
+      "height": cam.height,
+      "K": list(cam.K),
+      "dist": list(cam.dist),
+      "size": [w, h],
+    }
+  return {
+    "fps": 30,
+    "joints_urdf": joints,
+    "joints_lerobot": list(t.units.LEROBOT_JOINTS),
+    "scale": [cfgs.ACTION_SCALE[j] for j in joints],
+    "clip": [list(cfgs.ACTION_CLIP[j]) for j in joints],
+    "limits": limits,
+    "rest": [m.rest_joint_pos()[j] for j in joints],
+    "units": {
+      "offsets_deg": list(u.offsets_deg),
+      "grip_a_deg": u.grip_a_deg,
+      "grip_b_deg_per_pct": u.grip_b_deg_per_pct,
+    },
+    "cameras": cams,
+  }
+
+
+def export(pt: Path) -> Path:
+  """<pt>.ts: the student traced for the CPU, contract.json inside."""
+  model = Student.load(pt, "cpu")
+  ex = tuple(torch.zeros(1, h, w, 3, dtype=torch.uint8) for w, h in CAMS.values())
+  ts = torch.jit.trace(model, (*ex, torch.zeros(1, 6)))
+  out = pt.with_suffix(".ts")
+  torch.jit.save(ts, str(out), _extra_files={"contract.json": json.dumps(contract())})
+  return out
 
 
 KEYS = ("front", "grip", "joint_pos", "teacher_action")
@@ -190,7 +241,7 @@ def main() -> int:
   info = {"data": str(a.data), "args": {k: str(v) for k, v in vars(a).items()}}
   torch.save({"model": model.state_dict(), "info": info, "log": log}, a.out)
   a.out.with_suffix(".json").write_text(json.dumps({**info, "log": log}, indent=2))
-  print(f"wrote {a.out}")
+  print(f"wrote {a.out} and {export(a.out)}")
   return 0
 
 

@@ -165,9 +165,12 @@ def robot_spec(
   ds: str | None = None,
   cameras=("front", "grip"),
   look: bool = True,
+  flat: bool = True,
 ) -> mujoco.MjSpec:
   """The twin's arm + table + light (+ the dataset's mat look) as an MjSpec copy, with
-  undistorted `cameras`. No objects: the cap and mug are entities of their own."""
+  undistorted `cameras`. No objects: the cap and mug are entities of their own.
+  flat: textured materials as their mean colour (mujoco_warp renders no textures);
+  False keeps the textures, for MuJoCo's own renderer."""
   t = twin()
   sc = scene(ds)
   look_hook = None
@@ -194,7 +197,8 @@ def robot_spec(
   )
   spec = captured["spec"]
   spec.modelname = "so101_twin"
-  _flat_textures(spec)
+  if flat:
+    _flat_textures(spec)
   for name in cameras:
     _undistorted_camera(spec, sc, name)
   return spec

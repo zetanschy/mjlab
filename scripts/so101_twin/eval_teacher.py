@@ -4,9 +4,8 @@
       --stages ../../outputs/sim_eval/openpi_pi05_lora_cap_to_mug_sim_50/trials.jsonl \
       --out ../../outputs/sim_eval/mjlab_teacher_12299
 
-(env -u PYTHONPATH MUJOCO_GL=egl first.) --student student.pt instead of --checkpoint
-scores a student.py student: same stages and grading, in collect.py's env (its two
-cameras and the dataset's visual randomization).
+(env -u PYTHONPATH MUJOCO_GL=egl first.) The two-camera student is scored in the live twin
+instead (./robot sim-eval --policy <student>.ts): it renders as the real camera sees.
 
 THE STAGES are the ones every pi0.5 model was scored on by ./robot sim-eval (seeds
 1000-1099): their cap xy, cap orientation (open / closed side up), mug xy and handle
@@ -33,9 +32,7 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
-import collect
 import torch
-from student import Student
 
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
@@ -85,10 +82,7 @@ def main() -> int:
   p = argparse.ArgumentParser(
     description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
   )
-  p.add_argument("--checkpoint", type=Path, help="the teacher's model_N.pt")
-  p.add_argument(
-    "--student", type=Path, help="a student.py .pt instead: scored with its cameras"
-  )
+  p.add_argument("--checkpoint", required=True, type=Path)
   p.add_argument(
     "--stages", required=True, type=Path, help="a sim-eval run's trials.jsonl"
   )
@@ -97,32 +91,21 @@ def main() -> int:
   p.add_argument("--settle", type=float, default=1.0)
   p.add_argument("--device", default="cuda:0")
   a = p.parse_args()
-  if (a.checkpoint is None) == (a.student is None):
-    p.error("give one of --checkpoint or --student")
 
   stages = load_stages(a.stages)
   n = len(stages)
-  # The student gets the dataset's env: its cameras and visual DR.
-  env_cfg = (
-    collect.env_cfg(n)
-    if a.student
-    else cfgs.so101_cap_to_mug_env_cfg(play=True, num_envs=n)
-  )
+  env_cfg = cfgs.so101_cap_to_mug_env_cfg(play=True, num_envs=n)
   env_cfg.episode_length_s = a.timeout + 5.0  # our own timeout decides, not the task's
   env = ManagerBasedRlEnv(cfg=env_cfg, device=a.device)
   agent_cfg = load_rl_cfg(TASK)
   vec = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
-  if a.student:
-    student = Student.load(a.student, a.device)
-    policy = lambda _obs: student.act(env)  # noqa: E731
-  else:
-    runner_cls = load_runner_cls(TASK)
-    assert runner_cls is not None
-    runner = runner_cls(vec, asdict(agent_cfg), device=a.device)
-    runner.load(
-      str(a.checkpoint), load_cfg={"actor": True}, strict=True, map_location=a.device
-    )
-    policy = runner.get_inference_policy(device=a.device)
+  runner_cls = load_runner_cls(TASK)
+  assert runner_cls is not None
+  runner = runner_cls(vec, asdict(agent_cfg), device=a.device)
+  runner.load(
+    str(a.checkpoint), load_cfg={"actor": True}, strict=True, map_location=a.device
+  )
+  policy = runner.get_inference_policy(device=a.device)
 
   vec.reset()
   place(env, stages)
@@ -212,7 +195,7 @@ def main() -> int:
     )
   (a.out / "trials.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
   run = {
-    "policy": str(a.student or a.checkpoint),
+    "policy": str(a.checkpoint),
     "task": TASK,
     "episodes": n,
     "seed": stages[0]["seed"],
