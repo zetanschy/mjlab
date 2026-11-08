@@ -549,15 +549,23 @@ def reward_in_mug(env: ManagerBasedRlEnv) -> torch.Tensor:
 # home); lifted to 12 cm first, 25% (75% home), while 10 cm sideways at that height still
 # tipped it in 69%. Rest is 7.0+ cm past the wall in every layout, so stays clear.
 def reward_clear(
-  env: ManagerBasedRlEnv, height: float = 0.12, side: float = 0.065
+  env: ManagerBasedRlEnv,
+  height: float = 0.12,
+  side: float = 0.065,
+  from_floor: bool = False,
 ) -> torch.Tensor:
   """Once the cap is in the mug: the grasp site clear of the mug, `height` above its rim
   or `side` beyond its outer wall, so the way home is free (and stays paid on it).
+  `from_floor` counts the height from the mug's floor instead (full at the same point),
+  so the climb out of the mug pays; reward_home's gate keeps the rim-based one.
 
   After letting go the lowest finger piece sat 3 mm above the rim (iteration 6600), where
-  every move toward rest catches the mug, and the arm stayed ~3 rad from home."""
+  every move toward rest catches the mug, and the arm stayed ~3 rad from home. With the
+  servo dead time a run let go with the site 9-10.5 cm below the rim, where the rim-based
+  height is 0 all the way up, and never climbed out (lifted out by script, 90% got home)."""
   ee, rim = ee_pos_w(env), rim_centre_w(env)
-  up = ((ee[:, 2] - rim[:, 2]) / height).clamp(0.0, 1.0)
+  base = constants()["mug_h"] if from_floor else 0.0
+  up = ((ee[:, 2] - rim[:, 2] + base) / (height + base)).clamp(0.0, 1.0)
   r = torch.linalg.norm(ee[:, :2] - rim[:, :2], dim=-1)
   out = ((r - constants()["mug_ro"]) / side).clamp(0.0, 1.0)
   return cap_in_mug(env).float() * torch.maximum(up, out)

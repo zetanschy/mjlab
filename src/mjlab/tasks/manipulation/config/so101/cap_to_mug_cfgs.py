@@ -163,7 +163,9 @@ def so101_cap_to_mug_env_cfg(
     # 5, not 0.5: at 0.5 opening was <3% of the ~18/step a held cap in the mug earns,
     # and 500 iterations never moved the jaw.
     "release": RewardTermCfg(func=c2m.reward_release, weight=5.0),
-    "clear": RewardTermCfg(func=c2m.reward_clear, weight=2.0),
+    "clear": RewardTermCfg(
+      func=c2m.reward_clear, weight=2.0, params={"from_floor": True}
+    ),
     # 10, not 3: at 3 finishing the trip home was ~5% of the ~25/step a placed, released
     # cap earns; the arm stopped 1.5 rad short of a path a scripted move took 93% safely.
     "home": RewardTermCfg(func=c2m.reward_home, weight=10.0),

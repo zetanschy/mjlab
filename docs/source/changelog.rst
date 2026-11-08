@@ -17,6 +17,11 @@ Added
 Changed
 ^^^^^^^
 
+- ``Mjlab-CapToMug-So101-Twin``'s ``clear`` reward counts the grasp site's height from
+  the mug's floor instead of its rim, so climbing out of the mug pays. With the servo
+  dead time the policy let go 9-10.5 cm below the rim, where the rim-based term paid
+  nothing, and never brought the arm home; the Hub teacher trained with it
+  (``model_3700``) succeeds in 87.6% of 4096 episodes with the dead time.
 - ``Mjlab-CapToMug-So101-Twin`` trains with the changes its Hub teacher
   (``model_2800``, 92.5% of 1024 episodes) was trained with, recorded in that model's
   ``git/mjlab.diff`` but not committed until now: caps open side up half the time
